@@ -1,5 +1,7 @@
 # WB 커리큘럼 플래너
 
+저장소: https://github.com/whdudwns33-wb/wb-edu
+
 시중교재·자체교재를 등록하고, 여러 교재를 조합해 **표준 커리큘럼**을 만든 뒤, 실제 수업 일정에 맞춰
 **연간·분기·월간·주간·일간 진도계획표**를 생성·편집·출력하고 **실제 진도**를 기록하는 웹앱입니다.
 학생·반을 등록하지 않아도 교재만으로 표준과정과 계획표를 만들 수 있습니다.
@@ -26,6 +28,8 @@
 ## 설치·실행
 
 ```bash
+git clone https://github.com/whdudwns33-wb/wb-edu.git
+cd wb-edu
 npm install
 ```
 
