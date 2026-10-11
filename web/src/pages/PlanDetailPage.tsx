@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import type { DayView, HolidaySet, LearningObjective, MonthView, OutputTemplate, Plan, PlanSettings, PlanViews, QuarterView, TextbookProgress, User, WeekView, YearView } from '@wb/shared';
-import { OBJECTIVE_STATE_LABEL, UNASSIGNED_REASON_LABEL, assignmentViews, fmtMinutes, resolveColumns, todayKST, type ObjectiveStatus, type ScheduleDiff } from '@wb/shared';
+import { OBJECTIVE_STATE_LABEL, UNASSIGNED_REASON_LABEL, assignmentViews, fmtMinutes, latestUndoableId, resolveColumns, todayKST, type ObjectiveStatus, type ScheduleDiff } from '@wb/shared';
 import { get, post, put, errorMessage } from '../api.ts';
 import { useAuth } from '../auth.tsx';
 import { Alert, Badge, Empty, Field, Loading, Modal, SampleBadge, Tabs, useAsync, usePrompt } from '../components/ui.tsx';
@@ -1104,6 +1104,7 @@ function SupplementPanel({ plan, onPlan }: { plan: PlanDoc; onPlan: (p: PlanDoc)
 // ──────────────────────────────────────────────
 
 function HistoryTab({ plan, runOp }: { plan: PlanDoc; runOp: (op: string, params: Record<string, unknown>, direct?: boolean) => void }) {
+  const undoableId = latestUndoableId(plan);
   const { data: audit } = useAsync(() => get<Array<{ at: string; userId: string; action: string; detail: string }>>(`/api/plans/${plan.id}/audit`), [plan.version]);
   const { data: users } = useAsync(() => get<User[]>('/api/users').catch(() => [] as User[]), []);
   const name = (id: string) => users?.find((u) => u.id === id)?.displayName ?? id.slice(0, 8);
@@ -1130,7 +1131,7 @@ function HistoryTab({ plan, runOp }: { plan: PlanDoc; runOp: (op: string, params
                   <Badge>{h.action}</Badge> {h.description}
                 </td>
                 <td>
-                  {h.before && !h.undone && (
+                  {h.id === undoableId && (
                     <button className="sm" onClick={() => runOp('undo', { historyId: h.id })} title="이 변경 이후 입력된 실제 기록이 있으면 되돌릴 수 없습니다">
                       되돌리기
                     </button>

@@ -118,6 +118,13 @@ export interface BuildLessonsOptions {
   /** 속도 우선일 때 탐색 종료일 */
   horizonEnd?: ISODate;
   idGen?: () => string;
+  /**
+   * 설정이 바뀌어도 반드시 남겨야 하는 수업 (완료 기록·고정 배정이 있는 수업).
+   * 새 설정의 수업일이 아니게 되어도 그대로 두며, 새 진도는 더 넣지 않는다.
+   */
+  preserve?: Lesson[];
+  /** preserve 수업마다 이미 쓰고 있는 분 (가능시간을 그만큼으로 줄여 새 진도가 들어가지 않게 한다) */
+  preserveUsedMinutes?: Map<string, number>;
 }
 
 export function buildLessons(opts: BuildLessonsOptions): Lesson[] {
@@ -133,18 +140,20 @@ export function buildLessons(opts: BuildLessonsOptions): Lesson[] {
   const fixedByDate = new Map<string, number>();
   for (const f of settings.fixedEvents) fixedByDate.set(f.date, (fixedByDate.get(f.date) ?? 0) + f.minutes);
 
-  let end: ISODate =
+  // 정규 수업일은 원래 종료일까지만 만든다
+  const regularEnd: ISODate =
     settings.mode === 'period'
       ? settings.endDate || settings.targetDate || addDays(settings.startDate, settings.maxDays)
       : opts.horizonEnd ?? addDays(settings.startDate, settings.maxDays);
-  // 종료일 이후의 보강일도 수업일로 포함한다 (기간 뒤 보강은 흔한 경우)
+  // 종료일 이후의 보강일은 그 날짜만 수업일로 더한다 (사이의 정규 요일은 늘리지 않음)
+  let end: ISODate = regularEnd;
   for (const m of settings.makeupDays) if (m.date > end && m.date >= settings.startDate) end = m.date;
 
   const weekdaySet = new Set(settings.weekdays);
   const out: Lesson[] = [];
 
   for (const date of eachDay(settings.startDate, end)) {
-    const isClassDay = weekdaySet.has(weekday(date));
+    const isClassDay = weekdaySet.has(weekday(date)) && date <= regularEnd;
     const makeup = makeupByDate.get(date);
     if (!isClassDay && !makeup) continue;
 
@@ -189,7 +198,47 @@ export function buildLessons(opts: BuildLessonsOptions): Lesson[] {
       checklist: existing?.checklist ?? '',
     });
   }
-  return out;
+  // 기록·고정이 있는 수업은 새 설정의 수업일이 아니어도 남긴다 (기록을 잃지 않기 위해)
+  const outIds = new Set(out.map((l) => l.id));
+  for (const keep of opts.preserve ?? []) {
+    if (outIds.has(keep.id)) continue;
+    const used = opts.preserveUsedMinutes?.get(keep.id) ?? 0;
+    const sameDate = out.findIndex((l) => l.date === keep.date);
+    const kept: Lesson = {
+      ...keep,
+      status: keep.status === 'makeup' ? 'makeup' : 'scheduled',
+      availableMinutes: Math.min(keep.availableMinutes, used),
+      note: keep.note && keep.note.includes('설정 변경') ? keep.note : `${keep.note ? keep.note + ' · ' : ''}설정 변경 후에도 기록·고정 때문에 유지`,
+    };
+    if (sameDate >= 0) out.splice(sameDate, 1, kept);
+    else out.push(kept);
+  }
+  return out.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+}
+
+/** 완료 기록이나 고정 배정이 있어 지워지면 안 되는 수업과, 각 수업에서 그 배정들이 쓰는 분 */
+export function protectedLessons(plan: Plan): { lessons: Lesson[]; usedMinutes: Map<string, number> } {
+  const recorded = recordedAssignmentIds(plan);
+  const used = new Map<string, number>();
+  for (const a of plan.assignments) {
+    if (!(a.locked || recorded.has(a.id))) continue;
+    used.set(a.lessonId, (used.get(a.lessonId) ?? 0) + (a.activity === 'homework' ? 0 : a.minutes));
+  }
+  return { lessons: plan.lessons.filter((l) => used.has(l.id)), usedMinutes: used };
+}
+
+/** buildLessons 를 계획에 맞게 호출 (기존 수업 id 보존 + 기록·고정 수업 보존) */
+function rebuildLessonsFor(plan: Plan, settings: PlanSettings, ctx: ScheduleContext): Lesson[] {
+  const prot = protectedLessons(plan);
+  return buildLessons({
+    settings,
+    holidayDates: ctx.holidayDates,
+    existing: plan.lessons,
+    idGen: ctx.idGen,
+    horizonEnd: settings.mode === 'pace' ? addDays(settings.startDate, settings.maxDays) : undefined,
+    preserve: prot.lessons,
+    preserveUsedMinutes: prot.usedMinutes,
+  });
 }
 
 // ──────────────────────────────────────────────
@@ -854,8 +903,9 @@ export interface OpMeta {
 export function rescheduleRemaining(plan: Plan, ctx: ScheduleContext, fromDate: ISODate, meta: OpMeta): OpResult {
   const before = scheduleStateOf(plan);
   // 설정 변경을 반영해 수업일을 다시 만들되 기존 수업 id 는 보존
-  const lessons = buildLessons({ settings: plan.settings, holidayDates: ctx.holidayDates, existing: plan.lessons, idGen: ctx.idGen, horizonEnd: plan.settings.mode === 'pace' ? addDays(plan.settings.startDate, plan.settings.maxDays) : undefined });
-  const fromIndex = Math.max(0, lessons.findIndex((l) => l.date >= fromDate));
+  const lessons = rebuildLessonsFor(plan, plan.settings, ctx);
+  // fromDate 이후 수업이 없으면 다시 채울 수업이 없다 (처음부터 다시 채우지 않는다)
+  const fromIndex = lessons.findIndex((l) => l.date >= fromDate);
   const idx = fromIndex === -1 ? lessons.length : fromIndex;
   const { state, warnings } = refill({ plan, ctx, fromIndex: idx, lessonsOverride: lessons });
   if (plan.settings.mode === 'pace') {
@@ -874,12 +924,15 @@ export function cancelLesson(plan: Plan, ctx: ScheduleContext, lessonId: string,
   if (plan.assignments.some((a) => a.lessonId === lessonId && recorded.has(a.id))) {
     throw new Error('완료 기록이 있는 수업은 취소할 수 없습니다. 기록을 먼저 확인하세요.');
   }
+  if (plan.assignments.some((a) => a.lessonId === lessonId && a.locked)) {
+    throw new Error('이 날짜에 고정된 배정이 있어 휴강 처리할 수 없습니다. 고정을 해제하거나 다른 날짜로 고정한 뒤 다시 시도하세요.');
+  }
   const settings = structuredClone(plan.settings);
   if (!settings.offDays.some((o) => o.date === target.date)) {
     settings.offDays.push({ id: defaultIdGen(), date: target.date, reason: reason || '휴강', source: 'manual' });
   }
   const planWithSettings: Plan = { ...plan, settings };
-  const lessons = buildLessons({ settings, holidayDates: ctx.holidayDates, existing: plan.lessons, idGen: ctx.idGen, horizonEnd: settings.mode === 'pace' ? addDays(settings.startDate, settings.maxDays) : undefined });
+  const lessons = rebuildLessonsFor(plan, settings, ctx);
   const idx = lessons.findIndex((l) => l.id === lessonId);
   const { state, warnings } = refill({ plan: planWithSettings, ctx, fromIndex: idx, lessonsOverride: lessons });
   if (settings.mode === 'pace') {
@@ -898,7 +951,7 @@ export function addMakeupDay(plan: Plan, ctx: ScheduleContext, date: ISODate, mi
   settings.makeupDays.push({ id: defaultIdGen(), date, minutes, note });
   settings.offDays = settings.offDays.filter((o) => o.date !== date);
   const planWithSettings: Plan = { ...plan, settings };
-  const lessons = buildLessons({ settings, holidayDates: ctx.holidayDates, existing: plan.lessons, idGen: ctx.idGen, horizonEnd: settings.mode === 'pace' ? addDays(settings.startDate, settings.maxDays) : undefined });
+  const lessons = rebuildLessonsFor(plan, settings, ctx);
   const idx = lessons.findIndex((l) => l.date === date);
   if (idx < 0) throw new Error('보강일을 수업일로 만들지 못했습니다.');
   const { state, warnings } = refill({ plan: planWithSettings, ctx, fromIndex: idx, lessonsOverride: lessons });
@@ -926,7 +979,7 @@ export function postponeLesson(plan: Plan, ctx: ScheduleContext, lessonId: strin
   const { state, warnings } = refill({ plan: planWithout, ctx, fromIndex: idx + 1, prepend });
   if (plan.settings.mode === 'pace' && state.unassigned.some((u) => u.reason === 'time_short')) {
     // 속도 우선: 수업일을 늘려서 다시 시도
-    const lessons = buildLessons({ settings: plan.settings, holidayDates: ctx.holidayDates, existing: plan.lessons, idGen: ctx.idGen, horizonEnd: addDays(plan.settings.startDate, plan.settings.maxDays) });
+    const lessons = rebuildLessonsFor(plan, plan.settings, ctx);
     const r2 = refill({ plan: planWithout, ctx, fromIndex: idx + 1, prepend, lessonsOverride: lessons });
     const lastIdx = Math.max(r2.state.lessons.findIndex((l) => l.date === r2.state.endDateComputed), idx, 0);
     r2.state.lessons = r2.state.lessons.slice(0, lastIdx + 1);
@@ -950,6 +1003,12 @@ export function continueAssignment(
   const before = scheduleStateOf(plan);
   const a = plan.assignments.find((x) => x.id === assignmentId);
   if (!a) throw new Error('배정을 찾을 수 없습니다.');
+  // 같은 배정을 두 번 이어서 진행하면 남은 범위가 중복 배정된다
+  const existingCont = plan.assignments.find((x) => x.continuedFrom === a.id);
+  if (existingCont) {
+    const d = plan.lessons.find((l) => l.id === existingCont.lessonId)?.date ?? '';
+    throw new Error(`이미 남은 범위를 ${d} 수업에 이어서 진행하도록 배정했습니다. 그 수업의 기록을 입력하세요.`);
+  }
   const idx = plan.lessons.findIndex((l) => l.id === a.lessonId);
   if (remaining.minutes <= 0) throw new Error('남은 분량이 없습니다.');
   const cont: QueueEntry = {
@@ -968,7 +1027,7 @@ export function continueAssignment(
   };
   let { state, warnings } = refill({ plan, ctx, fromIndex: idx + 1, prepend: [cont] });
   if (plan.settings.mode === 'pace' && state.unassigned.some((u) => u.reason === 'time_short')) {
-    const lessons = buildLessons({ settings: plan.settings, holidayDates: ctx.holidayDates, existing: plan.lessons, idGen: ctx.idGen, horizonEnd: addDays(plan.settings.startDate, plan.settings.maxDays) });
+    const lessons = rebuildLessonsFor(plan, plan.settings, ctx);
     const r2 = refill({ plan, ctx, fromIndex: idx + 1, prepend: [cont], lessonsOverride: lessons });
     const lastIdx = Math.max(r2.state.lessons.findIndex((l) => l.date === r2.state.endDateComputed), idx, 0);
     r2.state.lessons = r2.state.lessons.slice(0, lastIdx + 1);
@@ -986,6 +1045,10 @@ export function swapLessons(plan: Plan, ctx: ScheduleContext, lessonIdA: string,
   const la = plan.lessons.find((l) => l.id === lessonIdA);
   const lb = plan.lessons.find((l) => l.id === lessonIdB);
   if (!la || !lb) throw new Error('수업을 찾을 수 없습니다.');
+  if (la.id === lb.id) throw new Error('같은 수업끼리는 맞바꿀 수 없습니다.');
+  for (const l of [la, lb]) {
+    if (l.status !== 'scheduled' && l.status !== 'makeup') throw new Error(`${l.date}은(는) ${l.status === 'holiday' ? '공휴일' : '휴강'}이라 맞바꿀 수 없습니다.`);
+  }
   const inA = plan.assignments.filter((a) => a.lessonId === lessonIdA);
   const inB = plan.assignments.filter((a) => a.lessonId === lessonIdB);
   if ([...inA, ...inB].some((a) => isImmovable(plan, a, recorded))) {
@@ -1056,13 +1119,31 @@ export function excludeUnassigned(plan: Plan, unassignedId: string, reason: stri
  * 되돌리기. 해당 이력 시점 이후에 생성된 실제 기록이 있으면 거부한다
  * (실제 완료 기록을 지우는 방식의 되돌리기는 금지).
  */
+/**
+ * 되돌릴 수 있는 이력: 아직 되돌리지 않은 일정 변경 중 가장 최근 것 하나.
+ * 오래된 변경을 바로 되돌리면 그 뒤의 변경(고정 등)이 말없이 사라지므로, 최근 것부터 차례로 되돌린다.
+ * ('되돌리기' 자체는 다시 되돌리지 않는다.)
+ */
+export function latestUndoableId(plan: Plan): string | null {
+  for (let i = plan.history.length - 1; i >= 0; i--) {
+    const h = plan.history[i];
+    if (h.action === 'undo' || !h.before) continue;
+    if (h.undone) continue;
+    return h.id;
+  }
+  return null;
+}
+
 export function undoHistory(plan: Plan, historyId: string, meta: OpMeta): OpResult {
   const entry = plan.history.find((h) => h.id === historyId);
-  if (!entry || !entry.before) throw new Error('되돌릴 수 있는 이력이 아닙니다.');
+  if (!entry || !entry.before || entry.action === 'undo') throw new Error('되돌릴 수 있는 이력이 아닙니다.');
   if (entry.undone) throw new Error('이미 되돌린 이력입니다.');
   const laterRecords = plan.records.filter((r) => r.recordedAt > entry.at);
   if (laterRecords.length > 0) {
     throw new Error(`이 변경 이후 입력된 실제 기록 ${laterRecords.length}건이 있어 되돌릴 수 없습니다. 기록은 삭제하지 않습니다.`);
+  }
+  if (latestUndoableId(plan) !== entry.id) {
+    throw new Error('가장 최근 변경부터 차례로 되돌릴 수 있습니다. 이 변경 뒤의 변경을 먼저 되돌리세요.');
   }
   // 복원 상태에 없는 배정을 참조하는 기록이 있으면 거부
   const restoredIds = new Set(entry.before.assignments.map((a) => a.id));
@@ -1083,7 +1164,7 @@ export function undoHistory(plan: Plan, historyId: string, meta: OpMeta): OpResu
 export function applySettingsAndReschedule(plan: Plan, ctx: ScheduleContext, settings: PlanSettings, meta: OpMeta): OpResult {
   const before = scheduleStateOf(plan);
   const planWithSettings: Plan = { ...plan, settings: structuredClone(settings) };
-  const lessons = buildLessons({ settings, holidayDates: ctx.holidayDates, existing: plan.lessons, idGen: ctx.idGen, horizonEnd: settings.mode === 'pace' ? addDays(settings.startDate, settings.maxDays) : undefined });
+  const lessons = rebuildLessonsFor(plan, settings, ctx);
   const { state, warnings } = refill({ plan: planWithSettings, ctx, fromIndex: 0, lessonsOverride: lessons });
   if (settings.mode === 'pace') {
     const lastIdx = Math.max(state.lessons.findIndex((l) => l.date === state.endDateComputed), 0);

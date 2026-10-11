@@ -16,8 +16,9 @@ interface Props {
 export function RecordControls({ planId, version, view, onSaved, compact }: Props) {
   const a = view.assignment;
   const [mode, setMode] = useState<'' | 'partial' | 'excluded' | 'not_done'>('');
-  const [from, setFrom] = useState(a.portion?.from ?? 0);
-  const [to, setTo] = useState(a.portion?.from ?? 0);
+  const range = view.range;
+  const [from, setFrom] = useState(range?.from ?? 0);
+  const [to, setTo] = useState(range?.from ?? 0);
   const [fraction, setFraction] = useState(50);
   const [reason, setReason] = useState('');
   const [note, setNote] = useState('');
@@ -84,7 +85,7 @@ export function RecordControls({ planId, version, view, onSaved, compact }: Prop
         <button className="sm" disabled={busy} onClick={() => setMode(mode === 'excluded' ? '' : 'excluded')}>
           제외
         </button>
-        {view.record?.status === 'partial' && view.remainingText && !isHw && (
+        {view.record?.status === 'partial' && view.remainingText && !isHw && !view.continuedTo && (
           <button className="sm primary" disabled={busy} onClick={cont} title="남은 범위를 다음 수업 맨 앞에 이어서 배정">
             남은 {view.remainingText} 이어서 진행
           </button>
@@ -92,7 +93,7 @@ export function RecordControls({ planId, version, view, onSaved, compact }: Prop
       </div>
       {mode === 'partial' && (
         <div className="row">
-          {a.portion ? (
+          {range ? (
             <>
               <span className="small">완료 범위</span>
               <input type="number" style={{ width: 80 }} value={from} onChange={(e) => setFrom(Number(e.target.value))} />
@@ -101,12 +102,12 @@ export function RecordControls({ planId, version, view, onSaved, compact }: Prop
             </>
           ) : (
             <>
-              <span className="small">완료 비율(%)</span>
+              <span className="small">이번 분량 중 완료(%)</span>
               <input type="number" style={{ width: 80 }} value={fraction} min={1} max={99} onChange={(e) => setFraction(Number(e.target.value))} />
             </>
           )}
           {!compact && <input placeholder="메모" value={note} onChange={(e) => setNote(e.target.value)} />}
-          <button className="sm primary" disabled={busy} onClick={() => save('partial', a.portion ? { completedPortion: { from, to } } : { completedFraction: fraction / 100 })}>
+          <button className="sm primary" disabled={busy} onClick={() => save('partial', range ? { completedPortion: { from, to } } : { completedFraction: fraction / 100 })}>
             저장
           </button>
         </div>

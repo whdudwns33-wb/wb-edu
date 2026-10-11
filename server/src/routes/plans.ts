@@ -193,6 +193,7 @@ export function registerPlanRoutes(app: FastifyInstance, ctx: AppContext) {
     const r = (req.body ?? {}) as Record<string, unknown>;
     const curriculum = store.get<Curriculum>('curriculum', str(r.curriculumId));
     if (!curriculum) throw new HttpError(400, '표준과정을 선택하세요.');
+    if (curriculum.archived) throw new HttpError(400, '보관된 과정으로는 계획을 만들 수 없습니다.');
     const at = ctx.now();
     const settings = normalizeSettings(r.settings);
     const snapshot = buildSnapshot(store, curriculum, at);
@@ -242,6 +243,7 @@ export function registerPlanRoutes(app: FastifyInstance, ctx: AppContext) {
     const r = (req.body ?? {}) as Record<string, unknown>;
     const curriculum = store.get<Curriculum>('curriculum', str(r.curriculumId));
     if (!curriculum) throw new HttpError(400, '표준과정을 선택하세요.');
+    if (curriculum.archived) throw new HttpError(400, '보관된 과정으로는 계획을 만들 수 없습니다.');
     const settings = normalizeSettings(r.settings);
     const snapshot = buildSnapshot(store, curriculum, ctx.now());
     const fromSession = num(r.fromSessionOrder, 0);
@@ -287,15 +289,30 @@ export function registerPlanRoutes(app: FastifyInstance, ctx: AppContext) {
   app.post('/api/plans/:id/refresh-snapshot', async (req) => {
     const user = requireUser(req);
     const existing = mustAccess(user, store.mustGet<Plan>('plan', (req.params as { id: string }).id));
+    const version = expectVersion(req.body);
     if (existing.status === 'confirmed') throw new HttpError(400, '확정된 계획은 사용한 교재 판본과 과정 버전을 보존합니다. 새 버전으로 계획을 다시 만드세요.');
+    // 기록·고정이 있으면 새 과정 구조와 기존 진행을 안전하게 맞출 수 없으므로 막는다 (기록을 지우거나 잘못 연결하지 않기 위해)
+    if (existing.records.length > 0 || existing.assignments.some((a) => a.locked)) {
+      throw new HttpError(400, '실제 기록이나 고정 배정이 있는 계획은 스냅샷을 갱신할 수 없습니다. 계획을 복제한 뒤 복제본에서 갱신하거나 새 계획을 만드세요.');
+    }
     const curriculum = store.mustGet<Curriculum>('curriculum', existing.curriculumId);
     const at = ctx.now();
     const snapshot = buildSnapshot(store, curriculum, at);
-    const planWith: Plan = { ...existing, snapshot };
-    const res = applySettingsAndReschedule(planWith, ctxFor(store, planWith), existing.settings, { by: user.id, at });
-    res.plan.history[res.plan.history.length - 1].description = `과정 v${curriculum.curriculumVersion}·교재 최신 판본으로 스냅샷을 갱신하고 재편성했습니다.`;
-    const saved = store.update('plan', touched(res.plan, user, at), existing.version);
-    return { ...planResponse(saved), diff: res.diff, warnings: res.warnings };
+    // 새 스냅샷의 차시 구성으로 처음부터 다시 편성한다 (기존 수업 id 는 날짜 기준으로 보존)
+    const res = generateSchedule(existing.settings, { snapshot, holidayDates: holidayDatesFor(store, existing.settings) }, existing.lessons);
+    const before = scheduleStateOf(existing);
+    const next: Plan = {
+      ...existing,
+      snapshot,
+      lessons: res.lessons,
+      assignments: res.assignments,
+      unassigned: res.unassigned,
+      endDateComputed: res.endDateComputed,
+      planVersion: existing.planVersion + 1,
+      history: [...existing.history, { id: genId(), at, by: user.id, action: 'reschedule', description: `과정 v${curriculum.curriculumVersion}·교재 최신 판본으로 스냅샷을 갱신하고 다시 편성했습니다.`, before }],
+    };
+    const saved = store.update('plan', touched(next, user, at), version);
+    return { ...planResponse(saved), diff: diffSchedule(before, scheduleStateOf(saved)), warnings: res.warnings };
   });
 
   /** 일정 수정 연산 (dryRun 이면 비교만 돌려주고 저장하지 않는다) */

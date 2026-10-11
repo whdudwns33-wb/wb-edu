@@ -77,6 +77,10 @@ export interface AssignmentView {
   /** 남은 범위 (부분 완료 시) */
   remainingText: string;
   continuedFrom?: string;
+  /** 이 배정이 다루는 범위 (범위형 항목, 배정에 범위가 없으면 항목 전체) */
+  range?: { from: number; to: number };
+  /** 이 배정의 남은 범위가 이미 다른 수업에 이어서 배정되었는지 */
+  continuedTo?: string;
 }
 
 export interface DayView {
@@ -275,7 +279,7 @@ export function assignmentViews(plan: Plan, lesson: Lesson): AssignmentView[] {
           const rem = subtractRanges(p.range, c.ranges);
           remainingText = rem.map((r) => rangeLabel(r, item.progressUnit)).join(', ');
         } else {
-          remainingText = `${Math.round((p.fraction - c.fraction) * 100)}% 남음`;
+          remainingText = `이번 분량의 ${Math.round(((p.fraction - c.fraction) / (p.fraction || 1)) * 100)}% 남음`;
         }
       }
       return {
@@ -298,6 +302,8 @@ export function assignmentViews(plan: Plan, lesson: Lesson): AssignmentView[] {
         recordLabel: record ? RECORD_STATUS_LABEL[record.status] : '미기록',
         remainingText,
         continuedFrom: a.continuedFrom,
+        range: item && 'range' in p ? p.range : undefined,
+        continuedTo: plan.assignments.find((x) => x.continuedFrom === a.id)?.lessonId,
       };
     });
 }

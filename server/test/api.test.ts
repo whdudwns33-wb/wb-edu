@@ -369,6 +369,39 @@ describe('선행 보충 제안과 기초 확인 (시나리오 10)', () => {
   });
 });
 
+describe('리뷰 결함 회귀 (서버)', () => {
+  it('#8 스냅샷 갱신은 새 과정 구성으로 다시 편성하고, 기록이 있으면 거부하며, version 이 필요하다', async () => {
+    // 관리자 소유의 새 과정 (2차시만) → 계획 → 과정에 차시 추가 → 스냅샷 갱신
+    const auto = (await asAdmin({ method: 'POST', url: '/api/curricula/auto-assemble', payload: { textbooks: [{ textbookId: SAMPLE_IDS.marketTextbook, role: 'main' }], compositionMode: 'sequential' } })).json();
+    const c = (await asAdmin({ method: 'POST', url: '/api/curricula', payload: { title: '갱신 테스트 과정', ...(auto as object), sessions: auto.sessions.slice(0, 2), compositionMode: 'sequential' } })).json();
+    const p = (await asTeacher({ method: 'POST', url: '/api/plans', payload: { curriculumId: c.id, settings: { ...settings, endDate: '2026-05-31' } } })).json();
+    const beforeItems = new Set(p.assignments.map((a: { itemId: string }) => a.itemId));
+    const full = (await asAdmin({ method: 'PUT', url: `/api/curricula/${c.id}`, payload: { ...c, sessions: auto.sessions } })).json();
+    expect(full.sessions.length).toBeGreaterThan(2);
+    expect((await asTeacher({ method: 'POST', url: `/api/plans/${p.id}/refresh-snapshot`, payload: {} })).statusCode).toBe(400); // version 없음
+    const r = await asTeacher({ method: 'POST', url: `/api/plans/${p.id}/refresh-snapshot`, payload: { version: p.version } });
+    expect(r.statusCode).toBe(200);
+    const afterItems = new Set(r.json().assignments.map((a: { itemId: string }) => a.itemId));
+    expect(afterItems.size).toBeGreaterThan(beforeItems.size);
+    // 이전 버전으로 다시 요청하면 409
+    expect((await asTeacher({ method: 'POST', url: `/api/plans/${p.id}/refresh-snapshot`, payload: { version: p.version } })).statusCode).toBe(409);
+    // 기록이 생기면 갱신 거부
+    const cur = r.json();
+    const rec = (await asTeacher({ method: 'POST', url: `/api/plans/${p.id}/records`, payload: { assignmentId: cur.assignments[0].id, status: 'done', version: cur.version } })).json();
+    const refused = await asTeacher({ method: 'POST', url: `/api/plans/${p.id}/refresh-snapshot`, payload: { version: rec.version } });
+    expect(refused.statusCode).toBe(400);
+    expect(refused.json().error).toContain('기록');
+  });
+
+  it('보관된 과정으로는 계획을 만들 수 없다', async () => {
+    const c = (await asAdmin({ method: 'POST', url: `/api/curricula/${SAMPLE_IDS.curriculumSupplement}/clone` })).json();
+    await asAdmin({ method: 'POST', url: `/api/curricula/${c.id}/archive`, payload: { archived: true } });
+    const r = await asTeacher({ method: 'POST', url: '/api/plans', payload: { curriculumId: c.id, settings } });
+    expect(r.statusCode).toBe(400);
+    expect(r.json().error).toContain('보관');
+  });
+});
+
 describe('동시 편집 알림용 버전 조회', () => {
   it('교재 버전과 마지막 수정자를 돌려주고, 수정되면 버전이 오른다', async () => {
     const v1 = (await asTeacher({ method: 'GET', url: `/api/versions/textbook/${SAMPLE_IDS.inhouseTextbook}` })).json();

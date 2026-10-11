@@ -55,9 +55,21 @@ export function recordCompleted(r: ProgressRecord, a: Assignment, item: Learning
       }
       return { ranges: [], fraction: 0 };
     }
-    return { ranges: [], fraction: Math.min(p.fraction, r.completedFraction ?? 0) };
+    // completedFraction 은 '이 배정(이번 수업 분량)'의 몇 %를 했는지다 (0~1). 항목 전체 기준으로 바꿔 더한다.
+    const share = Math.min(1, Math.max(0, r.completedFraction ?? 0));
+    return { ranges: [], fraction: p.fraction * share };
   }
   return { ranges: [], fraction: 0 };
+}
+
+/** 배정 id → 가장 최근 기록 */
+export function latestRecordsByAssignment(plan: Plan): Map<string, ProgressRecord> {
+  const m = new Map<string, ProgressRecord>();
+  for (const r of plan.records) {
+    const cur = m.get(r.assignmentId);
+    if (!cur || r.recordedAt >= cur.recordedAt) m.set(r.assignmentId, r);
+  }
+  return m;
 }
 
 export function itemCompletion(plan: Plan, itemId: string): ItemCompletion | null {
@@ -82,7 +94,8 @@ export function itemCompletion(plan: Plan, itemId: string): ItemCompletion | nul
   const excludedRanges: ItemRange[] = [];
   let completedFraction = 0;
   let excludedFraction = 0;
-  for (const r of plan.records) {
+  // 기록은 추가만 하며 배정마다 가장 최근 기록만 유효하다 (예: 완료 → 미진행으로 고친 경우 완료로 세지 않음)
+  for (const r of latestRecordsByAssignment(plan).values()) {
     const a = assignmentsById.get(r.assignmentId);
     if (!a || a.itemId !== itemId) continue;
     if (a.activity !== 'new') continue; // 복습·연습·평가·숙제는 새 진도 완료량에 포함하지 않음

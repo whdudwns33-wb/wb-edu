@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import type { LearningItem, Plan, Textbook } from '@wb/shared';
 import { MIN_DIFF_RATIO, MIN_SAMPLES, previewImport, isRangedUnit, PROGRESS_UNIT_LABEL, timingSuggestions } from '@wb/shared';
 import type { AppContext } from '../context.ts';
+import { canAccessPlan } from './plans.ts';
 import { HttpError, arr, bool, expectVersion, genId, newMeta, num, requireAdmin, requireUser, str, touched } from '../context.ts';
 
 const UNITS = Object.keys(PROGRESS_UNIT_LABEL);
@@ -162,9 +163,10 @@ export function registerTextbookRoutes(app: FastifyInstance, ctx: AppContext) {
 
   /** 실제 소요시간 기반 예상 시간 개선 제안 (모든 계획의 완료 기록 중 실제 분이 있는 것) */
   app.get('/api/textbooks/:id/time-suggestions', async (req) => {
-    requireUser(req);
+    const user = requireUser(req);
     const tb = store.mustGet<Textbook>('textbook', (req.params as { id: string }).id);
-    const plans = store.list<Plan>('plan', { includeArchived: true }).filter((p) => p.snapshot.textbooks.some((t) => t.id === tb.id));
+    // 강사는 자기가 볼 수 있는 계획의 기록만 집계한다 (관리자는 전체)
+    const plans = store.list<Plan>('plan', { includeArchived: true }).filter((p) => p.snapshot.textbooks.some((t) => t.id === tb.id) && canAccessPlan(user, p));
     return { suggestions: timingSuggestions(tb.id, tb.items, plans), planCount: plans.length, rule: `완료 기록의 실제 분을 항목 전체 기준으로 환산한 중앙값. 기록 ${MIN_SAMPLES}건 이상이고 현재 값과 ${MIN_DIFF_RATIO * 100}% 이상 차이 날 때만 제안하며 자동 적용하지 않음.` };
   });
 
