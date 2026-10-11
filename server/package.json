@@ -11,9 +11,10 @@
   },
   "dependencies": {
     "@fastify/cookie": "^11.0.0",
-    "@fastify/static": "^8.0.0",
+    "@fastify/static": "10.1.5",
     "@wb/shared": "*",
     "exceljs": "^4.4.0",
-    "fastify": "^5.3.0"
+    "fastify": "^5.3.0",
+    "uuid": "11.1.1"
   }
 }
