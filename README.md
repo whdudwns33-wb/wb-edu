@@ -63,7 +63,7 @@ WB_MODE=prod WB_ADMIN_USER=admin WB_ADMIN_PASSWORD='강한비밀번호' npm star
 ## 테스트
 
 ```bash
-npm test                 # vitest: shared 단위 57건 + server API 통합 26건
+npm test                 # vitest: shared 단위 59건 + server API 통합 26건
 npm run typecheck
 ```
 

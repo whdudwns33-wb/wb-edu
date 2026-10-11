@@ -98,6 +98,56 @@ export function Confirm({ message, onYes, onNo }: { message: string; onYes: () =
   );
 }
 
+export interface PromptOptions {
+  title: string;
+  label?: string;
+  defaultValue?: string;
+  type?: 'text' | 'date' | 'password' | 'confirm';
+  okLabel?: string;
+}
+
+/**
+ * window.prompt / window.confirm 대체. 브라우저 대화상자 대신 앱 모달을 띄우고 Promise 로 값을 돌려준다.
+ * confirm 유형은 '확인' 시 'ok', 취소 시 null.
+ */
+export function usePrompt() {
+  const [state, setState] = useState<(PromptOptions & { resolve: (v: string | null) => void }) | null>(null);
+  const ask = (opts: PromptOptions) => new Promise<string | null>((resolve) => setState({ ...opts, resolve }));
+  const element = state ? (
+    <PromptModal
+      opts={state}
+      onDone={(v) => {
+        state.resolve(v);
+        setState(null);
+      }}
+    />
+  ) : null;
+  return { ask, element };
+}
+
+function PromptModal({ opts, onDone }: { opts: PromptOptions; onDone: (v: string | null) => void }) {
+  const [value, setValue] = useState(opts.defaultValue ?? '');
+  const type = opts.type ?? 'text';
+  return (
+    <Modal title={opts.title} onClose={() => onDone(null)}>
+      {type === 'confirm' ? (
+        <p style={{ whiteSpace: 'pre-line' }}>{opts.label}</p>
+      ) : (
+        <label className="field">
+          {opts.label && <span>{opts.label}</span>}
+          <input type={type} value={value} autoFocus onChange={(e) => setValue(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && onDone(value)} />
+        </label>
+      )}
+      <div className="row mt" style={{ justifyContent: 'flex-end' }}>
+        <button onClick={() => onDone(null)}>취소</button>
+        <button className="primary" onClick={() => onDone(type === 'confirm' ? 'ok' : value)}>
+          {opts.okLabel ?? '확인'}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
 export const WEEKDAYS = ['일', '월', '화', '수', '목', '금', '토'];
 
 export function WeekdayPicker({ value, onChange }: { value: number[]; onChange: (v: number[]) => void }) {

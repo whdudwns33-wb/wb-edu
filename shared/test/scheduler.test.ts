@@ -69,6 +69,20 @@ describe('시간 배정 테스트 (요구사항 14절)', () => {
     expect(assignedMinutes(p3)).toBe(360);
   });
 
+  it('종료일 이후의 보강일도 수업일로 추가되어 부족이 해소된다', () => {
+    const { parallel, tbs } = world();
+    const { plan, ctx } = makePlan(parallel, tbs, baseSettings());
+    const target = plan.lessons.find((l) => l.date === '2026-04-20')!;
+    const p2 = cancelLesson(plan, ctx, target.id, '휴강', meta).plan;
+    const p3 = addMakeupDay(p2, ctx, '2026-05-04', undefined, '기간 뒤 보강', meta).plan;
+    const mk = p3.lessons.find((l) => l.date === '2026-05-04')!;
+    expect(mk.status).toBe('makeup');
+    expect(p3.lessons[p3.lessons.length - 1].date).toBe('2026-05-04');
+    expect(p3.unassigned.filter((u) => u.reason !== 'excluded')).toHaveLength(0);
+    expect(assignedMinutes(p3)).toBe(360);
+    expect(() => addMakeupDay(p3, ctx, '2026-03-01', undefined, '', meta)).toThrow(/시작일/);
+  });
+
   it('동일한 확정 입력은 동일한 편성 결과를 낸다', () => {
     const { parallel, tbs } = world();
     const a = makePlan(parallel, tbs, baseSettings()).plan;
@@ -249,10 +263,28 @@ describe('안전한 일정 수정', () => {
     expect(itemCompletion(p, a0.itemId)!.completed).toBe(12);
   });
 
-  it('두 수업 맞바꾸기는 선수 학습 순서를 어기면 차단한다', () => {
+  it('두 수업 맞바꾸기는 선수 학습 순서를 어기면 차단한다 (사이에 있는 수업까지 검사)', () => {
     const { basic, tbs } = world();
     const { plan, ctx } = makePlan(basic, tbs, baseSettings({ endDate: '2026-05-31' }));
     expect(() => swapLessons(plan, ctx, plan.lessons[0].id, plan.lessons[3].id, meta)).toThrow(/선수 학습/);
+    // 인접하지 않은 두 수업을 바꿔도 중간 수업의 선수 관계가 깨지면 차단
+    expect(() => swapLessons(plan, ctx, plan.lessons[1].id, plan.lessons[4].id, meta)).toThrow(/선수 학습/);
+  });
+
+  it('선수 관계가 없으면 맞바꾸기가 되고 가능시간 초과는 경고한다', () => {
+    const { parallel, tbs } = world();
+    const snapTbs = new Map(tbs);
+    const tb = structuredClone(tbs.get(SAMPLE_IDS.marketTextbook)!);
+    tb.items.forEach((it) => (it.prerequisiteItemIds = []));
+    snapTbs.set(tb.id, tb);
+    const { plan, ctx } = makePlan(parallel, snapTbs, baseSettings());
+    const a = plan.lessons[1];
+    const b = plan.lessons[5];
+    const inA = plan.assignments.filter((x) => x.lessonId === a.id).map((x) => x.id);
+    const res = swapLessons(plan, ctx, a.id, b.id, meta);
+    expect(res.plan.assignments.filter((x) => x.lessonId === b.id).map((x) => x.id).sort()).toEqual(inA.sort());
+    expect(res.warnings).toHaveLength(0);
+    expect(res.diff.affectedLessonDates).toEqual([a.date, b.date]);
   });
 
   it('되돌리기는 배정 상태를 복원하되 실제 기록은 지우지 않는다', () => {

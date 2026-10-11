@@ -4,7 +4,7 @@ import type { DayView, HolidaySet, LearningObjective, MonthView, Plan, PlanSetti
 import { OBJECTIVE_STATE_LABEL, UNASSIGNED_REASON_LABEL, assignmentViews, fmtMinutes, todayKST, type ObjectiveStatus, type ScheduleDiff } from '@wb/shared';
 import { get, post, put, errorMessage } from '../api.ts';
 import { useAuth } from '../auth.tsx';
-import { Alert, Badge, Empty, Field, Loading, Modal, SampleBadge, Tabs, useAsync } from '../components/ui.tsx';
+import { Alert, Badge, Empty, Field, Loading, Modal, SampleBadge, Tabs, useAsync, usePrompt } from '../components/ui.tsx';
 import { RecordControls } from '../components/RecordControls.tsx';
 import { SettingsForm } from './PlanCreatePage.tsx';
 
@@ -585,11 +585,13 @@ function DayCard({ d, plan, reload }: { d: DayView; plan: PlanDoc; reload: () =>
 // ──────────────────────────────────────────────
 
 function UnassignedTab({ plan, runOp }: { plan: PlanDoc; runOp: (op: string, params: Record<string, unknown>, direct?: boolean) => void }) {
+  const { ask, element: promptEl } = usePrompt();
   const itemTitle = (tbId: string, itemId: string) => plan.snapshot.textbooks.find((t) => t.id === tbId)?.items.find((i) => i.id === itemId)?.title ?? itemId;
   const pending = plan.unassigned.filter((u) => u.reason !== 'excluded');
   const excluded = plan.unassigned.filter((u) => u.reason === 'excluded');
   return (
     <div className="panel">
+      {promptEl}
       <h2>미배정 범위</h2>
       <p className="muted small">배치 실패가 곧 '어떤 방법으로도 불가능'은 아닙니다. 사유별로 기간 연장·보강·분할 허용·선수 항목 배치·고정 일정 조정을 검토하세요. 분량을 지우거나 자동으로 숙제로 돌리지 않습니다.</p>
       {pending.length === 0 ? (
@@ -624,7 +626,7 @@ function UnassignedTab({ plan, runOp }: { plan: PlanDoc; runOp: (op: string, par
                   </td>
                   <td className="small">{u.detail}</td>
                   <td>
-                    <button className="sm" onClick={() => { const reason = window.prompt('이 계획에서 제외하는 사유 (교재 원본은 삭제되지 않습니다)'); if (reason !== null) runOp('exclude', { unassignedId: u.id, reason }, true); }}>
+                    <button className="sm" onClick={async () => { const reason = await ask({ title: '이 계획에서 제외', label: '제외 사유 (교재 원본은 삭제되지 않습니다)' }); if (reason !== null) runOp('exclude', { unassignedId: u.id, reason }, true); }}>
                       이 계획에서 제외
                     </button>
                   </td>
@@ -636,7 +638,7 @@ function UnassignedTab({ plan, runOp }: { plan: PlanDoc; runOp: (op: string, par
       )}
       <div className="row mt">
         <button onClick={() => runOp('reschedule', { fromDate: todayKST() })}>남은 일정 재편성 (오늘부터)</button>
-        <button onClick={() => { const d = window.prompt('보강일 (YYYY-MM-DD)'); if (d) runOp('add_makeup', { date: d, note: '보강' }); }}>보강일 추가</button>
+        <button onClick={async () => { const d = await ask({ title: '보강일 추가', label: '보강일', type: 'date', defaultValue: todayKST() }); if (d) runOp('add_makeup', { date: d, note: '보강' }); }}>보강일 추가</button>
       </div>
       {excluded.length > 0 && (
         <>
@@ -662,10 +664,12 @@ function EditTab({ plan, runOp, openSettings }: { plan: PlanDoc; runOp: (op: str
   const [swapA, setSwapA] = useState('');
   const [pin, setPin] = useState<{ assignmentId: string; date: string } | null>(null);
   const [from, setFrom] = useState(todayKST());
+  const { ask, element: promptEl } = usePrompt();
   const recorded = useMemo(() => new Set(plan.records.map((r) => r.assignmentId)), [plan.records]);
   const lessonDates = plan.lessons.filter((l) => l.status === 'scheduled' || l.status === 'makeup').map((l) => l.date);
   return (
     <div className="panel">
+      {promptEl}
       <h2>안전한 일정 수정</h2>
       <p className="muted small">모든 변경은 적용 전 영향받는 수업·미배정 범위·종료일 변화를 비교해 보여주고, 적용 후 되돌릴 수 있습니다. 완료 기록이 있는 배정과 고정 배정은 재편성으로 바뀌지 않습니다.</p>
       <div className="row mb">
@@ -673,7 +677,7 @@ function EditTab({ plan, runOp, openSettings }: { plan: PlanDoc; runOp: (op: str
           <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
         </label>
         <button onClick={() => runOp('reschedule', { fromDate: from })}>이 날짜부터 남은 일정 전체 재편성</button>
-        <button onClick={() => { const d = window.prompt('보강일 (YYYY-MM-DD)', from); if (d) runOp('add_makeup', { date: d, note: '보강' }); }}>보강일 추가</button>
+        <button onClick={async () => { const d = await ask({ title: '보강일 추가', label: '보강일', type: 'date', defaultValue: from }); if (d) runOp('add_makeup', { date: d, note: '보강' }); }}>보강일 추가</button>
         <button onClick={openSettings}>편성 설정 변경 (요일·시간·휴일·트랙)</button>
       </div>
       {swapA && <Alert kind="info">맞바꿀 두 번째 수업의 '맞바꾸기' 버튼을 누르세요. (첫 번째: {plan.lessons.find((l) => l.id === swapA)?.date}) <button className="sm" onClick={() => setSwapA('')}>취소</button></Alert>}
@@ -727,7 +731,7 @@ function EditTab({ plan, runOp, openSettings }: { plan: PlanDoc; runOp: (op: str
                         <button className="sm" onClick={() => runOp('postpone', { lessonId: l.id })} title="이 수업의 새 진도를 다음 수업 가능일로 미루고 뒤를 밀어냅니다">
                           미루기
                         </button>{' '}
-                        <button className="sm" onClick={() => { const r = window.prompt('휴강 사유', '휴강'); if (r !== null) runOp('cancel_lesson', { lessonId: l.id, reason: r }); }}>
+                        <button className="sm" onClick={async () => { const r = await ask({ title: `${l.date} 휴강 처리`, label: '휴강 사유', defaultValue: '휴강' }); if (r !== null) runOp('cancel_lesson', { lessonId: l.id, reason: r }); }}>
                           휴강
                         </button>{' '}
                         <button className="sm" onClick={() => (swapA && swapA !== l.id ? (runOp('swap', { lessonIdA: swapA, lessonIdB: l.id }), setSwapA('')) : setSwapA(l.id))}>

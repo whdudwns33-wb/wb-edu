@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import type { AppSettings, Holiday, HolidaySet, OutputTemplate, User } from '@wb/shared';
 import { get, post, put, del, errorMessage } from '../api.ts';
 import { useAuth } from '../auth.tsx';
-import { Alert, Badge, Field, Loading, Tabs, useAsync } from '../components/ui.tsx';
+import { Alert, Badge, Field, Loading, Tabs, useAsync, usePrompt } from '../components/ui.tsx';
 
 type Tab = 'general' | 'holidays' | 'templates' | 'users' | 'samples' | 'account';
 
@@ -93,6 +93,7 @@ function HolidaysTab({ readOnly }: { readOnly: boolean }) {
   const [sets, setSets] = useState<HolidaySet[]>([]);
   const [err, setErr] = useState('');
   const [msg, setMsg] = useState('');
+  const { ask, element: promptEl } = usePrompt();
   useEffect(() => setSets(data ?? []), [data]);
   if (loading) return <Loading />;
   const upd = (id: string, patch: Partial<HolidaySet>) => setSets(sets.map((s) => (s.id === id ? { ...s, ...patch } : s)));
@@ -101,9 +102,10 @@ function HolidaysTab({ readOnly }: { readOnly: boolean }) {
     <div className="panel">
       {err && <Alert kind="danger">{err}</Alert>}
       {msg && <Alert kind="ok">{msg}</Alert>}
+      {promptEl}
       <p className="muted small">휴일 정보는 출처와 적용 연도를 표시하며 수정할 수 있습니다. 기본 제공 공휴일은 규정에 따른 산출값이므로 정부 고시를 확인한 뒤 '확인' 표시를 하세요. 학원 자체 휴무(방학 등)도 여기에 추가하거나 계획별 휴강으로 넣을 수 있습니다.</p>
       {!readOnly && (
-        <button className="sm mb" onClick={() => { const y = window.prompt('연도'); if (y) post('/api/holiday-sets', { year: Number(y), name: `휴일 ${y}` }).then(reload).catch((e) => setErr(errorMessage(e))); }}>
+        <button className="sm mb" onClick={async () => { const y = await ask({ title: '연도 세트 추가', label: '연도 (예: 2028)' }); if (y) post('/api/holiday-sets', { year: Number(y), name: `휴일 ${y}` }).then(reload).catch((e) => setErr(errorMessage(e))); }}>
           + 연도 세트 추가
         </button>
       )}
@@ -225,9 +227,11 @@ function UsersTab() {
   const { data, loading, reload } = useAsync(() => get<User[]>('/api/users'), []);
   const [f, setF] = useState({ username: '', displayName: '', password: '', role: 'teacher' });
   const [err, setErr] = useState('');
+  const { ask, element: promptEl } = usePrompt();
   if (loading) return <Loading />;
   return (
     <div className="panel">
+      {promptEl}
       {err && <Alert kind="danger">{err}</Alert>}
       <p className="muted small">관리자는 공통 교재·양식·표준과정을 관리하고, 강사는 허용된 과정과 자기 실행 계획을 다룹니다. 권한은 서버에서 확인합니다.</p>
       <div className="table-wrap">
@@ -255,7 +259,7 @@ function UsersTab() {
                   <button className="sm" onClick={() => put(`/api/users/${u.id}`, { role: u.role === 'admin' ? 'teacher' : 'admin' }).then(reload).catch((e) => setErr(errorMessage(e)))}>
                     {u.role === 'admin' ? '강사로' : '관리자로'}
                   </button>
-                  <button className="sm" onClick={() => { const p = window.prompt('새 비밀번호 (8자 이상)'); if (p) put(`/api/users/${u.id}`, { password: p }).then(reload).catch((e) => setErr(errorMessage(e))); }}>
+                  <button className="sm" onClick={async () => { const p = await ask({ title: `${u.username} 비밀번호 재설정`, label: '새 비밀번호 (8자 이상)', type: 'password' }); if (p) put(`/api/users/${u.id}`, { password: p }).then(reload).catch((e) => setErr(errorMessage(e))); }}>
                     비밀번호 재설정
                   </button>
                 </td>
@@ -284,13 +288,15 @@ function UsersTab() {
 function SamplesTab({ isAdmin }: { isAdmin: boolean }) {
   const { data, reload } = useAsync(() => get<{ count: number }>('/api/samples'), []);
   const [err, setErr] = useState('');
+  const { ask, element: promptEl } = usePrompt();
   return (
     <div className="panel">
+      {promptEl}
       {err && <Alert kind="danger">{err}</Alert>}
       <p>가상 샘플 데이터 {data?.count ?? 0}건이 저장되어 있습니다. 모든 샘플은 '가상 샘플' 표시가 붙으며, 실제 교재·학생 자료가 아닙니다.</p>
       <p className="muted small">데모 DB(server/data/wb-edu.demo.sqlite)와 운영 DB(WB_MODE=prod → wb-edu.sqlite)는 파일이 분리됩니다. 운영 DB에는 샘플을 넣지 않는 것을 권장합니다. 샘플 추가는 <code>npm run seed:sample</code> 명령으로 합니다.</p>
       {isAdmin && (
-        <button className="danger" disabled={!data?.count} onClick={() => { if (window.confirm('샘플로 표시된 교재·과정·계획·학습목표를 모두 삭제합니다. 계속할까요?')) del('/api/samples').then(reload).catch((e) => setErr(errorMessage(e))); }}>
+        <button className="danger" disabled={!data?.count} onClick={async () => { const ok = await ask({ title: '샘플 데이터 전체 삭제', label: '샘플로 표시된 교재·과정·계획·학습목표를 모두 삭제합니다. 계속할까요?', type: 'confirm', okLabel: '삭제' }); if (ok) del('/api/samples').then(reload).catch((e) => setErr(errorMessage(e))); }}>
           샘플 데이터 전체 삭제
         </button>
       )}

@@ -133,10 +133,12 @@ export function buildLessons(opts: BuildLessonsOptions): Lesson[] {
   const fixedByDate = new Map<string, number>();
   for (const f of settings.fixedEvents) fixedByDate.set(f.date, (fixedByDate.get(f.date) ?? 0) + f.minutes);
 
-  const end: ISODate =
+  let end: ISODate =
     settings.mode === 'period'
       ? settings.endDate || settings.targetDate || addDays(settings.startDate, settings.maxDays)
       : opts.horizonEnd ?? addDays(settings.startDate, settings.maxDays);
+  // 종료일 이후의 보강일도 수업일로 포함한다 (기간 뒤 보강은 흔한 경우)
+  for (const m of settings.makeupDays) if (m.date > end && m.date >= settings.startDate) end = m.date;
 
   const weekdaySet = new Set(settings.weekdays);
   const out: Lesson[] = [];
@@ -666,6 +668,39 @@ export function isImmovable(plan: Plan, a: Assignment, recorded: Set<string>): b
   return a.locked || recorded.has(a.id);
 }
 
+/**
+ * 선수 학습 순서 위반 목록: 어떤 배정의 선수 항목(새 학습·연습)이 그 배정보다 늦은 수업에 있으면 위반.
+ * 같은 수업 안에서는 order 로 비교한다.
+ */
+export function prerequisiteViolations(lessons: Lesson[], assignments: Assignment[], snapshot: PlanSnapshot): string[] {
+  const items = snapshotItemIndex(snapshot);
+  const dateOf = new Map(lessons.map((l) => [l.id, l.date]));
+  const pos = (a: Assignment) => `${dateOf.get(a.lessonId) ?? '9999-99-99'}#${String(a.order).padStart(4, '0')}`;
+  const byItem = new Map<string, Assignment[]>();
+  for (const a of assignments) {
+    if (a.activity === 'homework') continue;
+    byItem.set(a.itemId, [...(byItem.get(a.itemId) ?? []), a]);
+  }
+  const out: string[] = [];
+  for (const a of assignments) {
+    if (a.activity !== 'new' && a.activity !== 'practice') continue;
+    const info = items.get(a.itemId);
+    if (!info) continue;
+    for (const p of info.item.prerequisiteItemIds) {
+      const pre = (byItem.get(p) ?? []).filter((x) => x.activity === 'new' || x.activity === 'practice');
+      if (pre.length === 0) continue;
+      // 선수 항목의 마지막 조각이 이 배정의 첫 조각보다 뒤면 위반
+      const lastPre = pre.map(pos).sort().pop()!;
+      const mine = (byItem.get(a.itemId) ?? []).filter((x) => x.activity === 'new' || x.activity === 'practice').map(pos).sort()[0];
+      if (lastPre > mine) {
+        const msg = `'${info.item.title}'(${mine.slice(0, 10)})이(가) 선수 항목 '${items.get(p)?.item.title ?? p}'(${lastPre.slice(0, 10)})보다 앞섬`;
+        if (!out.includes(msg)) out.push(msg);
+      }
+    }
+  }
+  return out;
+}
+
 export function unassignedMinutes(list: UnassignedEntry[]): number {
   return list.filter((u) => u.reason !== 'excluded').reduce((s, u) => s + u.minutes, 0);
 }
@@ -859,11 +894,13 @@ export function addMakeupDay(plan: Plan, ctx: ScheduleContext, date: ISODate, mi
   const before = scheduleStateOf(plan);
   const settings = structuredClone(plan.settings);
   if (settings.makeupDays.some((m) => m.date === date)) throw new Error('이미 보강일로 등록된 날짜입니다.');
+  if (date < settings.startDate) throw new Error('보강일은 시작일 이후여야 합니다.');
   settings.makeupDays.push({ id: defaultIdGen(), date, minutes, note });
   settings.offDays = settings.offDays.filter((o) => o.date !== date);
   const planWithSettings: Plan = { ...plan, settings };
   const lessons = buildLessons({ settings, holidayDates: ctx.holidayDates, existing: plan.lessons, idGen: ctx.idGen, horizonEnd: settings.mode === 'pace' ? addDays(settings.startDate, settings.maxDays) : undefined });
   const idx = lessons.findIndex((l) => l.date === date);
+  if (idx < 0) throw new Error('보강일을 수업일로 만들지 못했습니다.');
   const { state, warnings } = refill({ plan: planWithSettings, ctx, fromIndex: idx, lessonsOverride: lessons });
   if (settings.mode === 'pace') {
     const lastIdx = Math.max(state.lessons.findIndex((l) => l.date === state.endDateComputed), idx, 0);
@@ -959,24 +996,16 @@ export function swapLessons(plan: Plan, ctx: ScheduleContext, lessonIdA: string,
   const minutesB = inB.filter((a) => a.activity !== 'homework').reduce((s, a) => s + a.minutes, 0);
   if (minutesA > lb.availableMinutes) warnings.push(`${lb.date} 수업의 가능시간(${lb.availableMinutes}분)보다 옮겨오는 분량(${minutesA}분)이 많습니다.`);
   if (minutesB > la.availableMinutes) warnings.push(`${la.date} 수업의 가능시간(${la.availableMinutes}분)보다 옮겨오는 분량(${minutesB}분)이 많습니다.`);
-  // 선수 학습 순서 검사
-  const items = snapshotItemIndex(ctx.snapshot);
-  const earlier = la.date < lb.date ? inA : inB;
-  const later = la.date < lb.date ? inB : inA;
-  for (const x of later) {
-    const info = items.get(x.itemId);
-    if (!info) continue;
-    for (const p of info.item.prerequisiteItemIds) {
-      if (earlier.some((e) => e.itemId === p)) {
-        throw new Error(`'${info.item.title}'은(는) 선수 학습 항목보다 먼저 배치될 수 없어 맞바꿀 수 없습니다.`);
-      }
-    }
-  }
   const assignments = plan.assignments.map((a) => {
     if (a.lessonId === lessonIdA) return { ...a, lessonId: lessonIdB };
     if (a.lessonId === lessonIdB) return { ...a, lessonId: lessonIdA };
     return a;
   });
+  // 선수 학습 순서 검사: 맞바꾼 뒤 계획 전체에서 선수 항목이 뒤로 가는 경우가 있으면 차단
+  const violations = prerequisiteViolations(plan.lessons, assignments, ctx.snapshot);
+  if (violations.length) {
+    throw new Error(`선수 학습 순서에 어긋나 맞바꿀 수 없습니다: ${violations.slice(0, 3).join('; ')}`);
+  }
   const state: ScheduleState = { ...scheduleStateOf(plan), assignments };
   return finish(plan, before, state, warnings, `${la.date} 수업과 ${lb.date} 수업을 맞바꿨습니다.`, 'swap', meta.by, meta.at);
 }
@@ -999,20 +1028,10 @@ export function pinAssignment(plan: Plan, ctx: ScheduleContext, assignmentId: st
   if (used + a.minutes > target.availableMinutes) {
     warnings.push(`${date} 수업의 가능시간(${target.availableMinutes}분)을 ${used + a.minutes - target.availableMinutes}분 초과합니다. 기존 배정은 삭제하지 않았습니다.`);
   }
-  // 선수 학습 순서 경고
-  const items = snapshotItemIndex(ctx.snapshot);
-  const info = items.get(a.itemId);
-  if (info) {
-    const dateOf = new Map(plan.lessons.map((l) => [l.id, l.date]));
-    for (const p of info.item.prerequisiteItemIds) {
-      const pa = plan.assignments.filter((x) => x.itemId === p);
-      if (pa.some((x) => (dateOf.get(x.lessonId) ?? '') > date)) {
-        warnings.push(`선수 학습 '${items.get(p)?.item.title ?? p}'보다 먼저 배치됩니다.`);
-      }
-    }
-  }
   const maxOrder = plan.assignments.filter((x) => x.lessonId === target.id).reduce((m, x) => Math.max(m, x.order), 0);
   const assignments = plan.assignments.map((x) => (x.id === a.id ? { ...x, lessonId: target.id, locked: true, order: maxOrder + 1 } : x));
+  // 선수 학습 순서 경고 (고정은 사용자의 명시적 선택이므로 차단하지 않고 경고)
+  for (const v of prerequisiteViolations(plan.lessons, assignments, ctx.snapshot)) warnings.push(`선수 학습 순서 주의: ${v}`);
   const state: ScheduleState = { ...scheduleStateOf(plan), assignments };
   if (plan.settings.endDate && date > plan.settings.endDate) warnings.push('종료일 이후 날짜입니다.');
   return finish(plan, before, state, warnings, `배정을 ${date} 수업에 고정했습니다.`, 'pin', meta.by, meta.at);
