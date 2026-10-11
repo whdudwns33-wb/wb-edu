@@ -1,0 +1,32 @@
+{
+  "name": "wb-curriculum-planner",
+  "version": "1.0.0",
+  "private": true,
+  "description": "WB 커리큘럼 플래너 - 교재/표준과정/실행계획/진도 관리 웹앱",
+  "type": "module",
+  "workspaces": [
+    "shared",
+    "server",
+    "web"
+  ],
+  "scripts": {
+    "dev": "npm run dev:server & npm run dev:web",
+    "dev:server": "npm run dev -w server",
+    "dev:web": "npm run dev -w web",
+    "build": "npm run build -w web && npm run typecheck",
+    "start": "npm run start -w server",
+    "seed:sample": "npm run seed:sample -w server",
+    "typecheck": "tsc -p shared/tsconfig.json --noEmit && tsc -p server/tsconfig.json --noEmit && tsc -p web/tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  }
+}

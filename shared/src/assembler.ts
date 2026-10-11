@@ -1,0 +1,297 @@
+/**
+ * 과정 조립판: 날짜 없이 학습항목을 차시에 배치한다.
+ *  - 순차형: A교재 완료 후 B교재
+ *  - 병행형: 한 차시에 여러 교재
+ *  - 보충형: 주교재 항목 뒤에 자체 활동지(attachToItemId)를 붙인다
+ * 분할 불가 항목은 임의로 나누지 않고, 미배정 항목은 별도 목록에 남긴다.
+ */
+import type { Curriculum, CurriculumSession, CurriculumTextbookRef, LearningItem, SessionEntry, Textbook, Track } from './types.ts';
+import { isRangedUnit, rangeCount, splitRangeByMinutes } from './units.ts';
+
+export interface AssembleOptions {
+  minutesPerSession: number;
+  reviewMinutes: number;
+  bufferMinutes: number;
+  assessmentEvery: number;
+  track?: Track;
+  idGen?: () => string;
+}
+
+function gen(idGen?: () => string): string {
+  return idGen?.() ?? globalThis.crypto?.randomUUID?.() ?? `as-${Math.random().toString(36).slice(2)}`;
+}
+
+/** 과정 참조에 따른 교재 항목 목록 (포함·제외 범위 적용, 제외 항목 제외, 순서대로) */
+export function scopedItems(ref: CurriculumTextbookRef, textbook: Textbook): LearningItem[] {
+  const inc = ref.includedItemIds ? new Set(ref.includedItemIds) : null;
+  const exc = new Set(ref.excludedItemIds);
+  return [...textbook.items]
+    .filter((it) => !it.excluded && !exc.has(it.id) && (inc ? inc.has(it.id) : true))
+    .sort((a, b) => a.order - b.order);
+}
+
+export function entryFromItem(textbookId: string, item: LearningItem, track: Track, idGen?: () => string, activity: SessionEntry['activity'] = 'new'): SessionEntry {
+  return {
+    id: gen(idGen),
+    textbookId,
+    itemId: item.id,
+    track,
+    activity: item.usage === 'homework' ? 'homework' : activity,
+    minutes: item.minutes,
+    portion: item.range && isRangedUnit(item.progressUnit) ? { ...item.range } : undefined,
+  };
+}
+
+/**
+ * 교재 참조와 구성 방식으로 차시를 자동 구성한다.
+ * 결과는 '권장안'이 아니라 자동 초안이며, 검토 상태는 draft 로 둔다.
+ */
+export function autoAssemble(
+  refs: CurriculumTextbookRef[],
+  textbooks: Map<string, Textbook>,
+  mode: Curriculum['compositionMode'],
+  opts: AssembleOptions,
+): { sessions: CurriculumSession[]; unassigned: SessionEntry[] } {
+  const budget = Math.max(0, opts.minutesPerSession - opts.reviewMinutes - opts.bufferMinutes);
+  const track = opts.track ?? 'current';
+  const lists: Array<{ ref: CurriculumTextbookRef; items: LearningItem[] }> = refs
+    .map((ref) => ({ ref, items: textbooks.has(ref.textbookId) ? scopedItems(ref, textbooks.get(ref.textbookId)!) : [] }));
+
+  // 대기열 구성
+  let queue: SessionEntry[] = [];
+  const unassigned: SessionEntry[] = [];
+  if (mode === 'sequential') {
+    for (const l of lists) for (const it of l.items) queue.push(entryFromItem(l.ref.textbookId, it, track, opts.idGen));
+  } else if (mode === 'parallel') {
+    const maxLen = Math.max(0, ...lists.map((l) => l.items.length));
+    for (let i = 0; i < maxLen; i++) {
+      for (const l of lists) {
+        const it = l.items[i];
+        if (it) queue.push(entryFromItem(l.ref.textbookId, it, track, opts.idGen));
+      }
+    }
+  } else {
+    // 보충형: 주교재 순서대로, 보충 교재 항목은 attachToItemId 뒤에 붙인다 (연결 없는 보충 항목은 미배정)
+    const main = lists.filter((l) => l.ref.role === 'main');
+    const supp = lists.filter((l) => l.ref.role !== 'main');
+    const attached = new Map<string, SessionEntry[]>();
+    for (const s of supp) {
+      for (const it of s.items) {
+        const e = entryFromItem(s.ref.textbookId, it, track, opts.idGen, 'practice');
+        if (it.attachToItemId) {
+          const arr = attached.get(it.attachToItemId) ?? [];
+          arr.push(e);
+          attached.set(it.attachToItemId, arr);
+        } else {
+          unassigned.push(e);
+        }
+      }
+    }
+    for (const l of main) {
+      for (const it of l.items) {
+        queue.push(entryFromItem(l.ref.textbookId, it, track, opts.idGen));
+        for (const e of attached.get(it.id) ?? []) queue.push(e);
+        attached.delete(it.id);
+      }
+    }
+    for (const rest of attached.values()) unassigned.push(...rest);
+  }
+
+  // 숙제 활동은 수업시간 없이 해당 차시에 붙는다
+  const homework = queue.filter((e) => e.activity === 'homework');
+  queue = queue.filter((e) => e.activity !== 'homework');
+
+  const sessions: CurriculumSession[] = [];
+  const itemIndex = new Map<string, LearningItem>();
+  for (const l of lists) for (const it of l.items) itemIndex.set(it.id, it);
+  let order = 1;
+  let i = 0;
+  let guard = 0;
+  while (i < queue.length && guard++ < 10000) {
+    const s: CurriculumSession = { id: gen(opts.idGen), order, title: `${order}차시`, entries: [] };
+    let remaining = budget;
+    const blocked = new Set<string>();
+    let j = i;
+    while (j < queue.length && remaining > 0) {
+      const e = queue[j];
+      if (blocked.has(e.textbookId)) { j++; continue; }
+      const it = itemIndex.get(e.itemId);
+      if (e.minutes <= remaining) {
+        s.entries.push(e);
+        remaining -= e.minutes;
+        queue.splice(j, 1);
+        continue;
+      }
+      if (it && it.splittable && remaining >= 5) {
+        const ranged = isRangedUnit(it.progressUnit) && e.portion && rangeCount(e.portion) >= 2;
+        if (ranged) {
+          const sp = splitRangeByMinutes(e.portion!, e.minutes, remaining);
+          if (sp) {
+            s.entries.push({ ...e, portion: sp.first, minutes: sp.firstMinutes });
+            queue[j] = { ...e, id: gen(opts.idGen), portion: sp.rest, minutes: sp.restMinutes };
+            remaining -= sp.firstMinutes;
+          }
+        } else if (e.minutes >= 10) {
+          const fm = Math.floor(remaining / 5) * 5;
+          if (fm >= 5 && fm < e.minutes) {
+            const totalF = e.fraction ?? 1;
+            const fr = Number(((fm / e.minutes) * totalF).toFixed(4));
+            s.entries.push({ ...e, minutes: fm, fraction: fr });
+            queue[j] = { ...e, id: gen(opts.idGen), minutes: e.minutes - fm, fraction: Number((totalF - fr).toFixed(4)) };
+            remaining -= fm;
+          }
+        }
+      }
+      if (!it || !it.splittable || e.minutes > budget) {
+        if (e.minutes > budget && !(it && it.splittable)) {
+          // 어떤 차시에도 들어갈 수 없는 분할 불가 항목
+          unassigned.push(e);
+          queue.splice(j, 1);
+          continue;
+        }
+      }
+      blocked.add(e.textbookId);
+      j++;
+    }
+    if (s.entries.length === 0) {
+      // 남은 항목을 하나도 넣지 못함 → 전부 미배정
+      unassigned.push(...queue.splice(i));
+      break;
+    }
+    // 숙제 붙이기: 같은 항목의 숙제는 그 항목이 배치된 차시에
+    for (const h of [...homework]) {
+      if (s.entries.some((e) => e.itemId === h.itemId || itemIndex.get(h.itemId)?.attachToItemId === e.itemId)) {
+        s.entries.push(h);
+        homework.splice(homework.indexOf(h), 1);
+      }
+    }
+    if (opts.assessmentEvery > 0 && order % opts.assessmentEvery === 0) s.marker = 'assessment';
+    sessions.push(s);
+    order++;
+  }
+  // 남은 숙제는 마지막 차시에
+  if (homework.length && sessions.length) sessions[sessions.length - 1].entries.push(...homework);
+  else unassigned.push(...homework);
+
+  return { sessions, unassigned };
+}
+
+export function sessionMinutes(s: CurriculumSession): number {
+  return s.entries.filter((e) => e.activity !== 'homework').reduce((a, e) => a + e.minutes, 0);
+}
+
+export function curriculumTotals(c: Curriculum): { sessions: number; minutes: number; homeworkMinutes: number; unassignedMinutes: number } {
+  return {
+    sessions: c.sessions.length,
+    minutes: c.sessions.reduce((a, s) => a + sessionMinutes(s), 0),
+    homeworkMinutes: c.sessions.reduce((a, s) => a + s.entries.filter((e) => e.activity === 'homework').reduce((x, e) => x + e.minutes, 0), 0),
+    unassignedMinutes: c.unassignedEntries.reduce((a, e) => a + e.minutes, 0),
+  };
+}
+
+/** 차시 번호·제목 재정렬 */
+export function renumber(sessions: CurriculumSession[]): CurriculumSession[] {
+  return sessions.map((s, i) => ({ ...s, order: i + 1, title: /^\d+차시$/.test(s.title) || !s.title ? `${i + 1}차시` : s.title }));
+}
+
+/** 항목 이동: 차시 간 또는 미배정 ↔ 차시 */
+export function moveEntry(c: Curriculum, entryId: string, toSessionId: string | null, toIndex?: number): Curriculum {
+  let found: SessionEntry | undefined;
+  const sessions = c.sessions.map((s) => {
+    const idx = s.entries.findIndex((e) => e.id === entryId);
+    if (idx >= 0) {
+      found = s.entries[idx];
+      return { ...s, entries: s.entries.filter((e) => e.id !== entryId) };
+    }
+    return s;
+  });
+  let unassigned = c.unassignedEntries.filter((e) => e.id !== entryId);
+  if (!found) found = c.unassignedEntries.find((e) => e.id === entryId);
+  if (!found) return c;
+  if (toSessionId === null) {
+    unassigned = [...unassigned, found];
+  } else {
+    const target = sessions.find((s) => s.id === toSessionId);
+    if (!target) return c;
+    const entries = [...target.entries];
+    entries.splice(toIndex ?? entries.length, 0, found);
+    target.entries = entries;
+  }
+  return { ...c, sessions, unassignedEntries: unassigned };
+}
+
+/** 항목 분할 (분할 가능 항목만). 범위형은 at 위치(포함)까지 앞부분, 수량형은 분 단위 */
+export function splitEntry(c: Curriculum, entryId: string, item: LearningItem, firstMinutes: number, idGen?: () => string): Curriculum {
+  if (!item.splittable) throw new Error('분할할 수 없는 항목입니다.');
+  const sessions = c.sessions.map((s) => {
+    const idx = s.entries.findIndex((e) => e.id === entryId);
+    if (idx < 0) return s;
+    const e = s.entries[idx];
+    let first: SessionEntry;
+    let rest: SessionEntry;
+    if (isRangedUnit(item.progressUnit) && e.portion) {
+      const sp = splitRangeByMinutes(e.portion, e.minutes, firstMinutes);
+      if (!sp) throw new Error('더 이상 나눌 수 없습니다.');
+      first = { ...e, portion: sp.first, minutes: sp.firstMinutes };
+      rest = { ...e, id: gen(idGen), portion: sp.rest, minutes: sp.restMinutes };
+    } else {
+      if (firstMinutes <= 0 || firstMinutes >= e.minutes) throw new Error('분할 시간이 범위를 벗어났습니다.');
+      const totalF = e.fraction ?? 1;
+      const fr = Number(((firstMinutes / e.minutes) * totalF).toFixed(4));
+      first = { ...e, minutes: firstMinutes, fraction: fr };
+      rest = { ...e, id: gen(idGen), minutes: e.minutes - firstMinutes, fraction: Number((totalF - fr).toFixed(4)) };
+    }
+    const entries = [...s.entries];
+    entries.splice(idx, 1, first, rest);
+    return { ...s, entries };
+  });
+  return { ...c, sessions };
+}
+
+/** 같은 항목의 연속 조각 묶기 */
+export function mergeEntries(c: Curriculum, entryIdA: string, entryIdB: string): Curriculum {
+  const sessions = c.sessions.map((s) => {
+    const ia = s.entries.findIndex((e) => e.id === entryIdA);
+    const ib = s.entries.findIndex((e) => e.id === entryIdB);
+    if (ia < 0 || ib < 0) return s;
+    const a = s.entries[ia];
+    const b = s.entries[ib];
+    if (a.itemId !== b.itemId) throw new Error('같은 학습항목의 조각만 묶을 수 있습니다.');
+    const merged: SessionEntry = {
+      ...a,
+      minutes: a.minutes + b.minutes,
+      portion: a.portion && b.portion ? { from: Math.min(a.portion.from, b.portion.from), to: Math.max(a.portion.to, b.portion.to) } : a.portion ?? b.portion,
+      fraction: a.fraction !== undefined || b.fraction !== undefined ? Number(((a.fraction ?? 0) + (b.fraction ?? 0)).toFixed(4)) : undefined,
+    };
+    const entries = s.entries.filter((e) => e.id !== entryIdB).map((e) => (e.id === entryIdA ? merged : e));
+    return { ...s, entries };
+  });
+  return { ...c, sessions };
+}
+
+/** 과정 복제: 학생 정보·검토 의견은 복제하지 않는다 */
+export function cloneCurriculum(c: Curriculum, by: string, at: string, idGen?: () => string): Curriculum {
+  const mapId = new Map<string, string>();
+  const remapEntry = (e: SessionEntry): SessionEntry => {
+    const id = gen(idGen);
+    mapId.set(e.id, id);
+    return { ...e, id };
+  };
+  return {
+    ...structuredClone(c),
+    id: gen(idGen),
+    title: `${c.title} (복제)`,
+    sessions: c.sessions.map((s) => ({ ...s, id: gen(idGen), entries: s.entries.map(remapEntry) })),
+    unassignedEntries: c.unassignedEntries.map(remapEntry),
+    curriculumVersion: 1,
+    status: 'draft',
+    origin: 'custom',
+    reviewComments: [],
+    createdAt: at,
+    createdBy: by,
+    updatedAt: at,
+    updatedBy: by,
+    version: 1,
+    archived: false,
+  };
+}

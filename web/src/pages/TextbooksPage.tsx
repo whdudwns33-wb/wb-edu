@@ -1,0 +1,599 @@
+import { useEffect, useMemo, useState } from 'react';
+import { Link, useNavigate, useParams } from 'react-router-dom';
+import type { AppSettings, ImportPreview, LearningItem, LearningObjective, ProgressUnit, Textbook } from '@wb/shared';
+import { PROGRESS_UNIT_LABEL, isRangedUnit, itemQuantity } from '@wb/shared';
+import { get, post, put, errorMessage } from '../api.ts';
+import { useAuth } from '../auth.tsx';
+import { Alert, Badge, Empty, Field, Loading, Modal, SampleBadge, useAsync } from '../components/ui.tsx';
+
+const VERIFY: Record<string, { label: string; kind: string }> = { unverified: { label: '미확인', kind: 'danger' }, reviewing: { label: '검토 중', kind: 'warn' }, verified: { label: '확인', kind: 'ok' } };
+
+export function TextbooksPage() {
+  const { user } = useAuth();
+  const [showArchived, setShowArchived] = useState(false);
+  const [q, setQ] = useState('');
+  const { data, loading, error } = useAsync(() => get<Textbook[]>(`/api/textbooks${showArchived ? '?archived=1' : ''}`), [showArchived]);
+  const rows = (data ?? []).filter((t) => !q || t.title.includes(q) || t.publisher.includes(q) || t.subject.includes(q));
+  return (
+    <>
+      <div className="topbar">
+        <h1>교재 보관함</h1>
+        <div className="row">
+          <input placeholder="검색" value={q} onChange={(e) => setQ(e.target.value)} />
+          <label className="check">
+            <input type="checkbox" checked={showArchived} onChange={(e) => setShowArchived(e.target.checked)} /> 보관 포함
+          </label>
+          {user?.role === 'admin' && (
+            <Link className="btn primary" to="/textbooks/new">
+              + 교재 등록
+            </Link>
+          )}
+        </div>
+      </div>
+      {error && <Alert kind="danger">{error}</Alert>}
+      <div className="panel tight">
+        {loading ? (
+          <Loading />
+        ) : rows.length === 0 ? (
+          <Empty>등록된 교재가 없습니다.</Empty>
+        ) : (
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>교재</th>
+                  <th>구분</th>
+                  <th>과목·학년</th>
+                  <th>판본</th>
+                  <th className="num">학습항목</th>
+                  <th className="num">예상 시간</th>
+                  <th>정보 확인</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((t) => (
+                  <tr key={t.id}>
+                    <td>
+                      <Link to={`/textbooks/${t.id}`}>{t.title}</Link> <SampleBadge show={t.isSample} /> {t.archived && <Badge>보관</Badge>}
+                      <div className="muted small">{t.publisher}</div>
+                    </td>
+                    <td>{t.kind === 'market' ? '시중' : '자체'}</td>
+                    <td>
+                      {t.subject} · {t.schoolLevel}
+                      {t.grade}
+                      {t.semester ? `-${t.semester}` : ''} {t.stage}
+                    </td>
+                    <td>{t.edition}</td>
+                    <td className="num">{t.items.filter((i) => !i.excluded).length}</td>
+                    <td className="num">{t.items.filter((i) => !i.excluded).reduce((s, i) => s + i.minutes, 0)}분</td>
+                    <td>
+                      <Badge kind={VERIFY[t.verification].kind}>{VERIFY[t.verification].label}</Badge>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
+function blankTextbook(): Textbook {
+  const at = new Date().toISOString();
+  return {
+    id: '',
+    kind: 'market',
+    title: '',
+    publisher: '',
+    subject: '독해',
+    schoolLevel: '초',
+    grade: '',
+    semester: '',
+    stage: '',
+    edition: '',
+    verification: 'unverified',
+    usageNote: '',
+    pdfPageOffset: 0,
+    excludedRanges: [],
+    items: [],
+    defaultUnit: 'page',
+    createdAt: at,
+    createdBy: '',
+    updatedAt: at,
+    updatedBy: '',
+    version: 0,
+    archived: false,
+    isSample: false,
+  };
+}
+
+function blankItem(order: number, unit: ProgressUnit): LearningItem {
+  return { id: crypto.randomUUID(), unit: '', subunit: '', order, title: '', objective: '', objectiveIds: [], progressUnit: unit, range: isRangedUnit(unit) ? { from: 1, to: 1 } : undefined, quantity: 1, minutes: 30, minutesSource: 'entered', splittable: true, prerequisiteItemIds: [], usage: 'both', excluded: false, extra: {} };
+}
+
+export function TextbookEditorPage() {
+  const { id } = useParams();
+  const nav = useNavigate();
+  const { user } = useAuth();
+  const isNew = id === 'new';
+  const [doc, setDoc] = useState<Textbook | null>(isNew ? blankTextbook() : null);
+  const [error, setError] = useState('');
+  const [msg, setMsg] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
+  const { data: settings } = useAsync(() => get<AppSettings>('/api/settings'), []);
+  const { data: objectives } = useAsync(() => get<LearningObjective[]>('/api/objectives'), []);
+  const readOnly = user?.role !== 'admin';
+
+  useEffect(() => {
+    if (!isNew && id) get<Textbook>(`/api/textbooks/${id}`).then(setDoc).catch((e) => setError(errorMessage(e)));
+  }, [id, isNew]);
+
+  const subjectFields = useMemo(() => {
+    if (!settings || !doc) return [];
+    const bySubject = settings.subjectFields.find((s) => s.subject === doc.subject)?.fields ?? [];
+    const inhouse = doc.kind === 'inhouse' ? settings.subjectFields.find((s) => s.subject === '자체')?.fields ?? [] : [];
+    const merged = [...bySubject, ...inhouse];
+    return merged.filter((f, i) => merged.findIndex((g) => g.key === f.key) === i);
+  }, [settings, doc?.subject, doc?.kind]);
+
+  if (error && !doc) return <Alert kind="danger">{error}</Alert>;
+  if (!doc) return <Loading />;
+
+  const set = (patch: Partial<Textbook>) => setDoc({ ...doc, ...patch });
+  const setItem = (idx: number, patch: Partial<LearningItem>) => set({ items: doc.items.map((it, i) => (i === idx ? { ...it, ...patch } : it)) });
+  const totalMinutes = doc.items.filter((i) => !i.excluded).reduce((s, i) => s + i.minutes, 0);
+
+  const save = async () => {
+    setBusy(true);
+    setError('');
+    setMsg('');
+    try {
+      const payload = { ...doc, items: doc.items.map((it, i) => ({ ...it, order: it.order || i + 1 })) };
+      const saved = isNew ? await post<Textbook>('/api/textbooks', payload) : await put<Textbook>(`/api/textbooks/${doc.id}`, payload);
+      setDoc(saved);
+      setMsg('저장했습니다.');
+      if (isNew) nav(`/textbooks/${saved.id}`, { replace: true });
+    } catch (e) {
+      setError(errorMessage(e));
+      if ((e as { status?: number }).status === 409 && !isNew) {
+        const latest = await get<Textbook>(`/api/textbooks/${doc.id}`);
+        setError(`다른 사용자가 먼저 수정했습니다 (v${latest.version}). 아래 '최신 버전 불러오기'를 누르면 내 변경이 사라집니다.`);
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const clone = async () => {
+    const c = await post<Textbook>(`/api/textbooks/${doc.id}/clone`);
+    nav(`/textbooks/${c.id}`);
+  };
+  const archive = async (archived: boolean) => {
+    const saved = await post<Textbook>(`/api/textbooks/${doc.id}/archive`, { archived });
+    setDoc(saved);
+  };
+
+  return (
+    <>
+      <div className="topbar">
+        <h1>
+          {isNew ? '교재 등록' : doc.title} <SampleBadge show={doc.isSample} /> {doc.archived && <Badge>보관</Badge>}
+        </h1>
+        <div className="row">
+          <Link to="/textbooks" className="btn">
+            목록
+          </Link>
+          {!readOnly && !isNew && (
+            <>
+              <button onClick={clone}>복제</button>
+              <button onClick={() => archive(!doc.archived)}>{doc.archived ? '보관 해제' : '보관'}</button>
+              <button onClick={() => setImportOpen(true)}>표·엑셀 붙여넣기</button>
+            </>
+          )}
+          {!readOnly && isNew && <button onClick={() => setImportOpen(true)}>표·엑셀 붙여넣기</button>}
+          {!readOnly && (
+            <button className="primary" disabled={busy} onClick={save}>
+              저장 {doc.version ? `(v${doc.version})` : ''}
+            </button>
+          )}
+        </div>
+      </div>
+      {error && (
+        <Alert kind="danger">
+          {error}
+          {error.includes('먼저 수정') && (
+            <div>
+              <button className="sm" onClick={() => get<Textbook>(`/api/textbooks/${doc.id}`).then(setDoc).then(() => setError(''))}>
+                최신 버전 불러오기
+              </button>
+            </div>
+          )}
+        </Alert>
+      )}
+      {msg && <Alert kind="ok">{msg}</Alert>}
+      {readOnly && <Alert kind="info">교재는 관리자만 수정할 수 있습니다. (읽기 전용)</Alert>}
+
+      <div className="panel">
+        <h2>기본 정보</h2>
+        <div className="grid cols-4">
+          <Field label="교재 구분">
+            <select value={doc.kind} onChange={(e) => set({ kind: e.target.value as Textbook['kind'] })} disabled={readOnly}>
+              <option value="market">시중교재</option>
+              <option value="inhouse">자체교재</option>
+            </select>
+          </Field>
+          <Field label="교재명 *">
+            <input value={doc.title} onChange={(e) => set({ title: e.target.value })} disabled={readOnly} />
+          </Field>
+          <Field label={doc.kind === 'market' ? '출판사' : '제작자'}>
+            <input value={doc.publisher} onChange={(e) => set({ publisher: e.target.value })} disabled={readOnly} />
+          </Field>
+          <Field label="과목">
+            <input list="subjects" value={doc.subject} onChange={(e) => set({ subject: e.target.value })} disabled={readOnly} />
+            <datalist id="subjects">
+              {['독해', '국어', '영어', '수학', '기타'].map((s) => (
+                <option key={s} value={s} />
+              ))}
+            </datalist>
+          </Field>
+          <Field label="학교급">
+            <select value={doc.schoolLevel} onChange={(e) => set({ schoolLevel: e.target.value as Textbook['schoolLevel'] })} disabled={readOnly}>
+              {['초', '중', '고', '공통'].map((s) => (
+                <option key={s}>{s}</option>
+              ))}
+            </select>
+          </Field>
+          <Field label="학년">
+            <input value={doc.grade} onChange={(e) => set({ grade: e.target.value })} disabled={readOnly} />
+          </Field>
+          <Field label="학기">
+            <input value={doc.semester} onChange={(e) => set({ semester: e.target.value })} disabled={readOnly} />
+          </Field>
+          <Field label="단계">
+            <input value={doc.stage} onChange={(e) => set({ stage: e.target.value })} disabled={readOnly} />
+          </Field>
+          <Field label={doc.kind === 'market' ? '판본·개정연도' : '자체교재 버전'}>
+            <input value={doc.edition} onChange={(e) => set({ edition: e.target.value })} disabled={readOnly} />
+          </Field>
+          <Field label="ISBN (선택)">
+            <input value={doc.isbn ?? ''} onChange={(e) => set({ isbn: e.target.value })} disabled={readOnly} />
+          </Field>
+          <Field label="자료 출처·연결 주소 (선택)">
+            <input value={doc.sourceUrl ?? ''} onChange={(e) => set({ sourceUrl: e.target.value })} disabled={readOnly} />
+          </Field>
+          <Field label="정보 확인 상태">
+            <select value={doc.verification} onChange={(e) => set({ verification: e.target.value as Textbook['verification'] })} disabled={readOnly}>
+              <option value="unverified">미확인</option>
+              <option value="reviewing">검토 중</option>
+              <option value="verified">확인</option>
+            </select>
+          </Field>
+          <Field label="기본 진도 단위 (완료율 집계)">
+            <select value={doc.defaultUnit} onChange={(e) => set({ defaultUnit: e.target.value as ProgressUnit })} disabled={readOnly}>
+              {Object.entries(PROGRESS_UNIT_LABEL).map(([k, v]) => (
+                <option key={k} value={k}>
+                  {v}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="PDF 페이지 보정 (PDF쪽 − 인쇄쪽)" hint="인쇄된 쪽수와 PDF 파일 페이지 번호를 구분합니다">
+            <input type="number" value={doc.pdfPageOffset} onChange={(e) => set({ pdfPageOffset: Number(e.target.value) })} disabled={readOnly} />
+          </Field>
+          <Field label="가상 샘플 데이터">
+            <label className="check">
+              <input type="checkbox" checked={doc.isSample} onChange={(e) => set({ isSample: e.target.checked })} disabled={readOnly} /> 샘플로 표시
+            </label>
+          </Field>
+        </div>
+        <Field label="사용 범위·이용 권한 메모">
+          <textarea value={doc.usageNote} onChange={(e) => set({ usageNote: e.target.value })} disabled={readOnly} />
+        </Field>
+      </div>
+
+      <div className="panel">
+        <div className="row between">
+          <h2>제외 범위 (정답·해설·부록 등)</h2>
+          {!readOnly && (
+            <button className="sm" onClick={() => set({ excludedRanges: [...doc.excludedRanges, { id: crypto.randomUUID(), label: '', range: { from: 0, to: 0 } }] })}>
+              + 추가
+            </button>
+          )}
+        </div>
+        {doc.excludedRanges.length === 0 ? (
+          <p className="muted small">없음</p>
+        ) : (
+          <div className="table-wrap">
+            <table className="compact">
+              <thead>
+                <tr>
+                  <th>이름</th>
+                  <th>시작</th>
+                  <th>끝</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {doc.excludedRanges.map((r, i) => (
+                  <tr key={r.id}>
+                    <td>
+                      <input value={r.label} disabled={readOnly} onChange={(e) => set({ excludedRanges: doc.excludedRanges.map((x, j) => (j === i ? { ...x, label: e.target.value } : x)) })} />
+                    </td>
+                    <td>
+                      <input type="number" value={r.range.from} disabled={readOnly} onChange={(e) => set({ excludedRanges: doc.excludedRanges.map((x, j) => (j === i ? { ...x, range: { ...x.range, from: Number(e.target.value) } } : x)) })} />
+                    </td>
+                    <td>
+                      <input type="number" value={r.range.to} disabled={readOnly} onChange={(e) => set({ excludedRanges: doc.excludedRanges.map((x, j) => (j === i ? { ...x, range: { ...x.range, to: Number(e.target.value) } } : x)) })} />
+                    </td>
+                    <td>{!readOnly && <button className="sm" onClick={() => set({ excludedRanges: doc.excludedRanges.filter((_, j) => j !== i) })}>삭제</button>}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      <div className="panel">
+        <div className="row between">
+          <h2>
+            학습항목 <span className="muted small">{doc.items.length}개 · 예상 {totalMinutes}분 (제외 항목 미포함)</span>
+          </h2>
+          {!readOnly && (
+            <div className="row">
+              <button className="sm" onClick={() => set({ items: [...doc.items, blankItem(doc.items.length + 1, doc.defaultUnit)] })}>
+                + 행 추가
+              </button>
+            </div>
+          )}
+        </div>
+        <p className="muted small">쪽·문항 등 범위형 단위는 시작~끝(양 끝 포함)으로 수량을 계산합니다. 12~23쪽 = 12쪽. 예상 소요시간은 직접 입력값과 추정값을 구분해 표시합니다.</p>
+        {doc.items.length === 0 ? (
+          <Empty>학습항목이 없습니다. 행을 추가하거나 표를 붙여넣어 가져오세요. 교재명만으로 목차를 자동 생성하지 않습니다.</Empty>
+        ) : (
+          <div className="table-wrap">
+            <table className="compact">
+              <thead>
+                <tr>
+                  <th>순서</th>
+                  <th>대단원</th>
+                  <th>소단원</th>
+                  <th>제목 *</th>
+                  <th>학습 목표</th>
+                  <th>목표 연결</th>
+                  <th>단위</th>
+                  <th>시작</th>
+                  <th>끝</th>
+                  <th>수량</th>
+                  <th>분 *</th>
+                  <th>출처</th>
+                  <th>난이도</th>
+                  <th>분할</th>
+                  <th>선수 항목</th>
+                  <th>용도</th>
+                  <th>보충 연결</th>
+                  {subjectFields.map((f) => (
+                    <th key={f.key}>{f.label}</th>
+                  ))}
+                  <th>준비물</th>
+                  <th>지도 메모</th>
+                  <th>제외</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {doc.items.map((it, i) => (
+                  <tr key={it.id} style={it.excluded ? { opacity: 0.5 } : undefined}>
+                    <td style={{ width: 56 }}>
+                      <input type="number" value={it.order} disabled={readOnly} onChange={(e) => setItem(i, { order: Number(e.target.value) })} />
+                    </td>
+                    <td style={{ minWidth: 110 }}>
+                      <input value={it.unit} disabled={readOnly} onChange={(e) => setItem(i, { unit: e.target.value })} />
+                    </td>
+                    <td style={{ minWidth: 100 }}>
+                      <input value={it.subunit} disabled={readOnly} onChange={(e) => setItem(i, { subunit: e.target.value })} />
+                    </td>
+                    <td style={{ minWidth: 150 }}>
+                      <input value={it.title} disabled={readOnly} onChange={(e) => setItem(i, { title: e.target.value })} />
+                    </td>
+                    <td style={{ minWidth: 150 }}>
+                      <input value={it.objective} disabled={readOnly} onChange={(e) => setItem(i, { objective: e.target.value })} />
+                    </td>
+                    <td style={{ minWidth: 140 }}>
+                      <select multiple size={2} value={it.objectiveIds} disabled={readOnly} onChange={(e) => setItem(i, { objectiveIds: [...e.target.selectedOptions].map((o) => o.value) })}>
+                        {(objectives ?? []).map((o) => (
+                          <option key={o.id} value={o.id}>
+                            {o.code} {o.title}
+                          </option>
+                        ))}
+                      </select>
+                    </td>
+                    <td>
+                      <select value={it.progressUnit} disabled={readOnly} onChange={(e) => setItem(i, { progressUnit: e.target.value as ProgressUnit, range: isRangedUnit(e.target.value as ProgressUnit) ? it.range ?? { from: 1, to: 1 } : undefined })}>
+                        {Object.entries(PROGRESS_UNIT_LABEL).map(([k, v]) => (
+                          <option key={k} value={k}>
+                            {v}
+                          </option>
+                        ))}
+                      </select>
+                    </td>
+                    <td style={{ width: 70 }}>{isRangedUnit(it.progressUnit) && <input type="number" value={it.range?.from ?? ''} disabled={readOnly} onChange={(e) => setItem(i, { range: { from: Number(e.target.value), to: it.range?.to ?? Number(e.target.value) } })} />}</td>
+                    <td style={{ width: 70 }}>{isRangedUnit(it.progressUnit) && <input type="number" value={it.range?.to ?? ''} disabled={readOnly} onChange={(e) => setItem(i, { range: { from: it.range?.from ?? Number(e.target.value), to: Number(e.target.value) } })} />}</td>
+                    <td style={{ width: 70 }} className="num">
+                      {isRangedUnit(it.progressUnit) ? <span className="muted">{itemQuantity(it)}</span> : <input type="number" value={it.quantity} disabled={readOnly} onChange={(e) => setItem(i, { quantity: Number(e.target.value) })} />}
+                    </td>
+                    <td style={{ width: 70 }}>
+                      <input type="number" value={it.minutes} disabled={readOnly} onChange={(e) => setItem(i, { minutes: Number(e.target.value), minutesSource: 'entered' })} />
+                    </td>
+                    <td>
+                      <Badge kind={it.minutesSource === 'entered' ? 'ok' : 'warn'}>{it.minutesSource === 'entered' ? '입력' : '추정'}</Badge>
+                    </td>
+                    <td>
+                      <select value={it.difficulty ?? ''} disabled={readOnly} onChange={(e) => setItem(i, { difficulty: e.target.value ? (Number(e.target.value) as LearningItem['difficulty']) : undefined })}>
+                        <option value="">-</option>
+                        {[1, 2, 3, 4, 5].map((d) => (
+                          <option key={d} value={d}>
+                            {d}
+                          </option>
+                        ))}
+                      </select>
+                    </td>
+                    <td>
+                      <input type="checkbox" checked={it.splittable} disabled={readOnly} onChange={(e) => setItem(i, { splittable: e.target.checked })} />
+                    </td>
+                    <td style={{ minWidth: 140 }}>
+                      <select multiple size={2} value={it.prerequisiteItemIds} disabled={readOnly} onChange={(e) => setItem(i, { prerequisiteItemIds: [...e.target.selectedOptions].map((o) => o.value) })}>
+                        {doc.items
+                          .filter((o) => o.id !== it.id)
+                          .map((o) => (
+                            <option key={o.id} value={o.id}>
+                              {o.order}. {o.title}
+                            </option>
+                          ))}
+                      </select>
+                    </td>
+                    <td>
+                      <select value={it.usage} disabled={readOnly} onChange={(e) => setItem(i, { usage: e.target.value as LearningItem['usage'] })}>
+                        <option value="both">수업·숙제</option>
+                        <option value="class">수업만</option>
+                        <option value="homework">숙제만</option>
+                      </select>
+                    </td>
+                    <td style={{ minWidth: 120 }}>
+                      <input value={it.attachToItemId ?? ''} placeholder="주교재 항목 id" disabled={readOnly} onChange={(e) => setItem(i, { attachToItemId: e.target.value || undefined })} title="보충형 구성에서 이 항목이 붙을 주교재 학습항목 id" />
+                    </td>
+                    {subjectFields.map((f) => (
+                      <td key={f.key} style={{ minWidth: 100 }}>
+                        <input value={it.extra[f.key] ?? ''} disabled={readOnly} onChange={(e) => setItem(i, { extra: { ...it.extra, [f.key]: e.target.value } })} />
+                      </td>
+                    ))}
+                    <td style={{ minWidth: 100 }}>
+                      <input value={it.materials ?? ''} disabled={readOnly} onChange={(e) => setItem(i, { materials: e.target.value })} />
+                    </td>
+                    <td style={{ minWidth: 120 }}>
+                      <input value={it.teachingNote ?? ''} disabled={readOnly} onChange={(e) => setItem(i, { teachingNote: e.target.value })} />
+                    </td>
+                    <td>
+                      <input type="checkbox" checked={it.excluded} disabled={readOnly} onChange={(e) => setItem(i, { excluded: e.target.checked })} />
+                    </td>
+                    <td className="nowrap">
+                      {!readOnly && (
+                        <>
+                          <button className="sm" title="위로" disabled={i === 0} onClick={() => { const items = [...doc.items]; [items[i - 1], items[i]] = [items[i], items[i - 1]]; set({ items: items.map((x, k) => ({ ...x, order: k + 1 })) }); }}>↑</button>
+                          <button className="sm" title="삭제" onClick={() => set({ items: doc.items.filter((_, j) => j !== i) })}>×</button>
+                        </>
+                      )}
+                      <div className="muted" style={{ fontSize: 10 }}>{it.id.slice(0, 8)}</div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+      {importOpen && (
+        <ImportModal
+          defaultUnit={doc.defaultUnit}
+          onClose={() => setImportOpen(false)}
+          onApply={(items, mode) => {
+            const base = mode === 'replace' ? [] : doc.items;
+            set({ items: [...base, ...items.map((it, i) => ({ ...it, order: base.length + i + 1 }))] });
+            setImportOpen(false);
+          }}
+        />
+      )}
+    </>
+  );
+}
+
+function ImportModal({ defaultUnit, onClose, onApply }: { defaultUnit: ProgressUnit; onClose: () => void; onApply: (items: LearningItem[], mode: 'append' | 'replace') => void }) {
+  const [text, setText] = useState('');
+  const [preview, setPreview] = useState<ImportPreview | null>(null);
+  const [error, setError] = useState('');
+  const [mode, setMode] = useState<'append' | 'replace'>('append');
+  const run = async () => {
+    setError('');
+    try {
+      setPreview(await post<ImportPreview>('/api/textbooks/import-preview', { text, defaultUnit }));
+    } catch (e) {
+      setError(errorMessage(e));
+    }
+  };
+  const hasErrors = preview?.issues.some((i) => i.level === 'error');
+  return (
+    <Modal title="표·엑셀 붙여넣기 가져오기" onClose={onClose} wide>
+      <p className="muted small">
+        엑셀이나 표에서 복사해 붙여넣으세요. 머리글 예: <code>대단원 소단원 제목 목표 단위 시작 끝 수량 시간 난이도 분할 용도 준비물 메모</code>. 머리글이 없으면 <code>대단원, 소단원, 제목, 단위, 시작, 끝, 시간</code> 순서로 해석합니다.
+      </p>
+      <textarea rows={8} value={text} onChange={(e) => setText(e.target.value)} placeholder={'대단원\t소단원\t제목\t단위\t시작\t끝\t시간\n1단원\t1\t중심 문장 찾기\t쪽\t12\t23\t30'} />
+      <div className="row mt">
+        <button className="primary" onClick={run} disabled={!text.trim()}>
+          미리보기
+        </button>
+        <label className="check">
+          <input type="radio" checked={mode === 'append'} onChange={() => setMode('append')} /> 기존 항목 뒤에 추가
+        </label>
+        <label className="check">
+          <input type="radio" checked={mode === 'replace'} onChange={() => setMode('replace')} /> 기존 항목 바꾸기
+        </label>
+      </div>
+      {error && <Alert kind="danger">{error}</Alert>}
+      {preview && (
+        <div className="mt">
+          {preview.issues.length > 0 && (
+            <Alert kind={hasErrors ? 'danger' : 'warn'}>
+              {preview.issues.map((i, k) => (
+                <div key={k}>
+                  {i.row ? `${i.row}행: ` : ''}
+                  {i.level === 'error' ? '[오류] ' : '[확인] '}
+                  {i.message}
+                </div>
+              ))}
+            </Alert>
+          )}
+          <div className="table-wrap" style={{ maxHeight: 300 }}>
+            <table className="compact">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>대단원</th>
+                  <th>소단원</th>
+                  <th>제목</th>
+                  <th>단위</th>
+                  <th>범위/수량</th>
+                  <th>분</th>
+                  <th>출처</th>
+                  <th>분할</th>
+                </tr>
+              </thead>
+              <tbody>
+                {preview.items.map((it, i) => (
+                  <tr key={it.id}>
+                    <td>{i + 1}</td>
+                    <td>{it.unit}</td>
+                    <td>{it.subunit}</td>
+                    <td>{it.title}</td>
+                    <td>{PROGRESS_UNIT_LABEL[it.progressUnit]}</td>
+                    <td>{it.range ? `${it.range.from}~${it.range.to} (${itemQuantity(it)})` : it.quantity}</td>
+                    <td>{it.minutes}</td>
+                    <td>{it.minutesSource === 'entered' ? '입력' : '추정'}</td>
+                    <td>{it.splittable ? '가능' : '불가'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="row mt" style={{ justifyContent: 'flex-end' }}>
+            <button className="primary" disabled={hasErrors || preview.items.length === 0} onClick={() => onApply(preview.items, mode)}>
+              {hasErrors ? '오류를 고친 뒤 적용할 수 있습니다' : `${preview.items.length}개 항목 적용`}
+            </button>
+          </div>
+        </div>
+      )}
+    </Modal>
+  );
+}
