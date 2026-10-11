@@ -329,6 +329,46 @@ describe('실행 계획', () => {
   });
 });
 
+describe('선행 보충 제안과 기초 확인 (시나리오 10)', () => {
+  it('제안 → 관리자가 보충 과정 초안 생성(강사는 403) → 기초 확인 전 확정 불가 → 확인 후 확정', async () => {
+    const created = await asTeacher({ method: 'POST', url: '/api/plans', payload: { curriculumId: SAMPLE_IDS.curriculumAdvance, settings: { ...settings, endDate: '2026-05-31' } } });
+    expect(created.statusCode).toBe(201);
+    let plan = created.json();
+    expect(plan.snapshot.advance.requiredObjectiveIds).toEqual(['sample-obj-RD-5-01']);
+    const sug = await asTeacher({ method: 'GET', url: `/api/plans/${plan.id}/supplement` });
+    expect(sug.statusCode).toBe(200);
+    const s = sug.json();
+    expect(s.objectives.map((o: { objective: { code: string } }) => o.objective.code)).toEqual(['RD-5-01']);
+    expect(s.items.length).toBeGreaterThan(0);
+    const picks = s.items.map((i: { textbookId: string; itemId: string }) => ({ textbookId: i.textbookId, itemId: i.itemId }));
+    // 강사는 표준과정을 만들 수 없다
+    expect((await asTeacher({ method: 'POST', url: `/api/plans/${plan.id}/supplement-curriculum`, payload: { items: picks } })).statusCode).toBe(403);
+    const draft = await asAdmin({ method: 'POST', url: `/api/plans/${plan.id}/supplement-curriculum`, payload: { items: picks } });
+    expect(draft.statusCode).toBe(201);
+    const c = draft.json();
+    expect(c.status).toBe('draft');
+    expect(c.title).toContain('[보충 제안]');
+    expect(c.sessions.flatMap((x: { entries: Array<{ track: string }> }) => x.entries).every((e: { track: string }) => e.track === 'review')).toBe(true);
+    // 없는 항목은 400
+    expect((await asAdmin({ method: 'POST', url: `/api/plans/${plan.id}/supplement-curriculum`, payload: { items: [{ textbookId: SAMPLE_IDS.marketTextbook, itemId: 'nope' }] } })).statusCode).toBe(400);
+
+    // 선행 계획: 미배정이 없더라도 기초 확인 전에는 확정 불가
+    expect(plan.blockers.some((b: string) => b.includes('기초 확인'))).toBe(true);
+    // 근거 없이 확인하면 400
+    expect((await asTeacher({ method: 'POST', url: `/api/plans/${plan.id}/advance-confirm`, payload: { confirmed: true, note: '', version: plan.version } })).statusCode).toBe(400);
+    const ok = await asTeacher({ method: 'POST', url: `/api/plans/${plan.id}/advance-confirm`, payload: { confirmed: true, note: '진단평가 90점', version: plan.version } });
+    expect(ok.statusCode).toBe(200);
+    plan = ok.json();
+    expect(plan.snapshot.advance.prerequisitesConfirmed).toBe(true);
+    expect(plan.snapshot.advance.prerequisitesConfirmedBy).toBe('샘플 강사');
+    expect(plan.blockers.some((b: string) => b.includes('기초 확인'))).toBe(false);
+    expect(plan.history.at(-1).description).toContain('진단평가 90점');
+    // 과정 원본의 선행 확인 상태는 바뀌지 않는다
+    const cur = (await asAdmin({ method: 'GET', url: `/api/curricula/${SAMPLE_IDS.curriculumAdvance}` })).json();
+    expect(cur.advance.prerequisitesConfirmed).toBe(false);
+  });
+});
+
 describe('동시 편집 알림용 버전 조회', () => {
   it('교재 버전과 마지막 수정자를 돌려주고, 수정되면 버전이 오른다', async () => {
     const v1 = (await asTeacher({ method: 'GET', url: `/api/versions/textbook/${SAMPLE_IDS.inhouseTextbook}` })).json();

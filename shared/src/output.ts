@@ -22,7 +22,8 @@ export type OutputColumnKey =
   | 'timeAllocation'
   | 'record'
   | 'remaining'
-  | 'recordNote';
+  | 'recordNote'
+  | 'extra';
 
 export interface OutputColumnDef {
   key: OutputColumnKey;
@@ -30,7 +31,7 @@ export interface OutputColumnDef {
   /** 강사용 전용(내부 메모·시간 배분 등). 학생·학부모용 양식에서 선택해도 출력하지 않는다. */
   internal?: boolean;
   /** 수업 단위 값(행마다 같은 값) */
-  value: (ctx: { day: DayView; view: AssignmentView }) => string;
+  value: (ctx: { day: DayView; view: AssignmentView; extraLabels?: Record<string, string> }) => string;
 }
 
 const hwOf = (day: DayView) =>
@@ -45,6 +46,16 @@ export const OUTPUT_COLUMNS: OutputColumnDef[] = [
   { key: 'range', label: '범위', value: ({ view }) => view.rangeText },
   { key: 'pdfRange', label: 'PDF 페이지', internal: true, value: ({ view }) => view.pdfRangeText },
   { key: 'itemTitle', label: '학습항목', value: ({ view }) => view.itemTitle },
+  {
+    key: 'extra',
+    label: '과목별 항목',
+    // 지문·독해 기능·개념·유형·어휘 등 교재 학습항목의 과목별 선택 항목. 설정의 과목별 항목 이름으로 표시한다
+    value: ({ view, extraLabels }) =>
+      Object.entries(view.extra)
+        .filter(([, v]) => v)
+        .map(([k, v]) => `${extraLabels?.[k] ?? k}: ${v}`)
+        .join(' · '),
+  },
   { key: 'objective', label: '학습목표', value: ({ view }) => view.objective },
   { key: 'activity', label: '활동', value: ({ view }) => view.activityLabel },
   { key: 'track', label: '트랙', value: ({ view }) => view.trackLabel },
@@ -66,7 +77,7 @@ export const OUTPUT_COLUMNS: OutputColumnDef[] = [
 
 export const OUTPUT_COLUMN_LABEL: Record<OutputColumnKey, string> = Object.fromEntries(OUTPUT_COLUMNS.map((c) => [c.key, c.label])) as Record<OutputColumnKey, string>;
 
-export const DEFAULT_TEACHER_COLUMNS: OutputColumnKey[] = ['date', 'textbook', 'range', 'pdfRange', 'itemTitle', 'objective', 'activity', 'track', 'minutes', 'homework', 'materials', 'checklist', 'teachingNote', 'timeAllocation', 'record', 'remaining'];
+export const DEFAULT_TEACHER_COLUMNS: OutputColumnKey[] = ['date', 'textbook', 'range', 'pdfRange', 'itemTitle', 'extra', 'objective', 'activity', 'track', 'minutes', 'homework', 'materials', 'checklist', 'teachingNote', 'timeAllocation', 'record', 'remaining'];
 export const DEFAULT_STUDENT_COLUMNS: OutputColumnKey[] = ['date', 'textbook', 'range', 'objective', 'activity', 'minutes', 'homework', 'record', 'remaining'];
 
 /** 양식의 열 목록을 유효한 정의로 바꾼다. 학생용은 internal 열을 제거한다. */
@@ -84,11 +95,18 @@ export function resolveColumns(template: Pick<OutputTemplate, 'audience' | 'colu
 }
 
 /** 수업 하나를 선택한 열로 행들로 펼친다 (숙제 활동은 '과제' 열로 묶이므로 행에서 제외). 배정이 없으면 한 행. */
-export function dayRows(day: DayView, columns: OutputColumnDef[]): string[][] {
+export function dayRows(day: DayView, columns: OutputColumnDef[], extraLabels?: Record<string, string>): string[][] {
   const views = day.assignments.filter((a) => a.assignment.activity !== 'homework');
   if (views.length === 0) {
     const label = day.lesson.status === 'holiday' ? `(공휴일) ${day.lesson.note}` : day.lesson.status === 'cancelled' ? `(휴강) ${day.lesson.note}` : '(배정 없음)';
     return [columns.map((c) => (c.key === 'date' ? day.lesson.date : c.key === 'textbook' || c.key === 'itemTitle' ? label : c.key === 'homework' ? hwOf(day) : ''))];
   }
-  return views.map((view) => columns.map((c) => c.value({ day, view })));
+  return views.map((view) => columns.map((c) => c.value({ day, view, extraLabels })));
+}
+
+/** 운영 설정의 과목별 항목 정의로 key → 이름 지도를 만든다 (같은 key 는 먼저 나온 이름) */
+export function extraLabelMap(subjectFields: Array<{ fields: Array<{ key: string; label: string }> }> | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const sf of subjectFields ?? []) for (const f of sf.fields) if (!(f.key in out)) out[f.key] = f.label;
+  return out;
 }

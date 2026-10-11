@@ -16,6 +16,8 @@ export interface ExportOptions {
   to?: string;
   /** 출력 양식 (열 선택). 없으면 대상별 기본 열 */
   template?: OutputTemplate | null;
+  /** 과목별 항목 key → 이름 */
+  extraLabels?: Record<string, string>;
 }
 
 export async function buildWorkbook(plan: Plan, opts: ExportOptions): Promise<Buffer> {
@@ -122,7 +124,7 @@ export async function buildWorkbook(plan: Plan, opts: ExportOptions): Promise<Bu
     const ws = wb.addWorksheet('주간');
     ws.addRow(['주', ...columns.map((c) => c.label)]).font = { bold: true };
     for (const y of views.years) for (const q of y.quarters) for (const m of q.months) for (const w of m.weeks) {
-      for (const d of w.days) for (const row of dayRows(d, columns)) ws.addRow([w.label, ...row]);
+      for (const d of w.days) for (const row of dayRows(d, columns, opts.extraLabels)) ws.addRow([w.label, ...row]);
     }
     autoWidth(ws);
   }
@@ -131,7 +133,7 @@ export async function buildWorkbook(plan: Plan, opts: ExportOptions): Promise<Bu
     const ws = wb.addWorksheet('일간');
     ws.addRow(columns.map((c) => c.label)).font = { bold: true };
     const days: DayView[] = views.years.flatMap((y) => y.quarters).flatMap((q) => q.months).flatMap((m) => m.weeks).flatMap((w) => w.days);
-    for (const d of days) for (const row of dayRows(d, columns)) ws.addRow(row);
+    for (const d of days) for (const row of dayRows(d, columns, opts.extraLabels)) ws.addRow(row);
     autoWidth(ws);
   }
 

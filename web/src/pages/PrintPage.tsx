@@ -1,7 +1,7 @@
 import { useMemo } from 'react';
 import { useParams, useSearchParams } from 'react-router-dom';
-import type { OutputTemplate, Plan, PlanViews } from '@wb/shared';
-import { dayRows, fmtMinutes, resolveColumns } from '@wb/shared';
+import type { AppSettings, OutputTemplate, Plan, PlanViews } from '@wb/shared';
+import { dayRows, extraLabelMap, fmtMinutes, resolveColumns } from '@wb/shared';
 import { get } from '../api.ts';
 import { Loading, useAsync } from '../components/ui.tsx';
 
@@ -21,6 +21,8 @@ export function PrintPage() {
   const to = sp.get('to') ?? '';
   const { data: plan } = useAsync(() => get<Plan>(`/api/plans/${id}`), [id]);
   const { data: templates } = useAsync(() => get<OutputTemplate[]>('/api/templates'), []);
+  const { data: appSettings } = useAsync(() => get<AppSettings>('/api/settings'), []);
+  const extraLabels = useMemo(() => extraLabelMap(appSettings?.subjectFields), [appSettings]);
   const { data } = useAsync(() => get<{ views: PlanViews }>(`/api/plans/${id}/views${from && to ? `?from=${from}&to=${to}` : ''}`), [id, from, to]);
   const template = templates?.find((t) => t.id === templateId) ?? null;
   // 양식이 지정되면 양식의 대상을 따르고, 아니면 audience 파라미터
@@ -236,7 +238,7 @@ export function PrintPage() {
                   </thead>
                   <tbody>
                     {w.days.flatMap((d) =>
-                      dayRows(d, columns).map((row, i) => (
+                      dayRows(d, columns, extraLabels).map((row, i) => (
                         <tr key={`${d.lesson.id}-${i}`}>
                           {row.map((cell, j) => (
                             <td key={j}>{columns[j].key === 'textbook' ? clean(cell) : cell}</td>
@@ -267,7 +269,7 @@ export function PrintPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {dayRows(d, columns.filter((c) => c.key !== 'date')).map((row, i) => (
+                    {dayRows(d, columns.filter((c) => c.key !== 'date'), extraLabels).map((row, i) => (
                       <tr key={i}>
                         {row.map((cell, j) => (
                           <td key={j}>{columns.filter((c) => c.key !== 'date')[j].key === 'textbook' ? clean(cell) : cell}</td>

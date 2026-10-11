@@ -1,7 +1,8 @@
 import type { FastifyInstance } from 'fastify';
-import type { Curriculum, HolidaySet, ISODate, LearningObjective, OutputTemplate, Plan, PlanSettings, PlanSnapshot, ProgressRecord, SessionUser, Textbook, UnderstandingCheck } from '@wb/shared';
+import type { AppSettings, Curriculum, CurriculumTextbookRef, HolidaySet, ISODate, LearningObjective, OutputTemplate, Plan, PlanSettings, PlanSnapshot, ProgressRecord, SessionUser, Textbook, UnderstandingCheck } from '@wb/shared';
 import {
   addMakeupDay,
+  autoAssemble,
   advancePrerequisiteGaps,
   applySettingsAndReschedule,
   buildPlanViews,
@@ -11,6 +12,7 @@ import {
   dayView,
   diffSchedule,
   excludeUnassigned,
+  extraLabelMap,
   generateSchedule,
   isISODate,
   itemCompletionSummary,
@@ -21,6 +23,7 @@ import {
   remainingAfterRecord,
   rescheduleRemaining,
   scheduleStateOf,
+  supplementSuggestion,
   swapLessons,
   textbookProgress,
   todayKST,
@@ -30,7 +33,7 @@ import {
   type ScheduleContext,
 } from '@wb/shared';
 import type { AppContext } from '../context.ts';
-import { HttpError, arr, bool, expectVersion, genId, newMeta, num, requireUser, str, touched } from '../context.ts';
+import { HttpError, arr, bool, expectVersion, genId, newMeta, num, requireAdmin, requireUser, str, touched } from '../context.ts';
 import { buildWorkbook, type Level } from '../export.ts';
 
 // ──────────────────────────────────────────────
@@ -511,7 +514,8 @@ export function registerPlanRoutes(app: FastifyInstance, ctx: AppContext) {
     const template = q.template ? store.get<OutputTemplate>('template', q.template) : null;
     if (q.template && !template) throw new HttpError(400, '출력 양식을 찾을 수 없습니다.');
     const audience: 'teacher' | 'student' = template ? template.audience : q.audience === 'student' ? 'student' : 'teacher';
-    const buf = await buildWorkbook(plan, { audience, levels, from: q.from, to: q.to, template });
+    const appSettings = store.get<AppSettings>('settings', 'app');
+    const buf = await buildWorkbook(plan, { audience, levels, from: q.from, to: q.to, template, extraLabels: extraLabelMap(appSettings?.subjectFields) });
     const fname = encodeURIComponent(`${plan.title}_v${plan.planVersion}_${audience === 'student' ? '학생용' : '강사용'}.xlsx`);
     reply.header('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     reply.header('Content-Disposition', `attachment; filename*=UTF-8''${fname}`);
@@ -531,6 +535,88 @@ export function registerPlanRoutes(app: FastifyInstance, ctx: AppContext) {
       }
     }
     return { date, lessons: out };
+  });
+
+  /** 선수 학습 부족 시 보충 제안 (제안만, 확정은 담당자) */
+  app.get('/api/plans/:id/supplement', async (req) => {
+    const user = requireUser(req);
+    const plan = mustAccess(user, store.mustGet<Plan>('plan', (req.params as { id: string }).id));
+    const objectives = store.list<LearningObjective>('objective');
+    const textbooks = store.list<Textbook>('textbook');
+    return { advance: plan.snapshot.advance ?? null, ...supplementSuggestion(plan, objectives, textbooks) };
+  });
+
+  /** 보충 제안에서 고른 항목으로 보충 과정 초안을 만든다 (표준과정은 관리자만 만든다) */
+  app.post('/api/plans/:id/supplement-curriculum', async (req, reply) => {
+    const user = requireAdmin(req);
+    const plan = store.mustGet<Plan>('plan', (req.params as { id: string }).id);
+    const r = (req.body ?? {}) as Record<string, unknown>;
+    const picks = arr<Record<string, unknown>>(r.items).map((x) => ({ textbookId: str(x.textbookId), itemId: str(x.itemId) }));
+    if (picks.length === 0) throw new HttpError(400, '보충할 학습항목을 1개 이상 고르세요.');
+    const tbIds = [...new Set(picks.map((p) => p.textbookId))];
+    const textbooks = new Map<string, Textbook>();
+    for (const id of tbIds) {
+      const tb = store.get<Textbook>('textbook', id);
+      if (!tb) throw new HttpError(400, `교재를 찾을 수 없습니다: ${id}`);
+      for (const p of picks.filter((x) => x.textbookId === id)) if (!tb.items.some((i) => i.id === p.itemId)) throw new HttpError(400, `교재 '${tb.title}'에 없는 학습항목입니다: ${p.itemId}`);
+      textbooks.set(id, tb);
+    }
+    const refs: CurriculumTextbookRef[] = tbIds.map((id, i) => {
+      const tb = textbooks.get(id)!;
+      return { textbookId: id, edition: tb.edition, textbookVersion: tb.version, role: i === 0 ? 'main' : 'sub', includedItemIds: picks.filter((p) => p.textbookId === id).map((p) => p.itemId), excludedItemIds: [] };
+    });
+    const minutes = num(r.minutesPerSession, plan.settings.minutesPerLesson);
+    const { sessions, unassigned } = autoAssemble(refs, textbooks, 'sequential', { minutesPerSession: minutes, reviewMinutes: plan.settings.reviewMinutes, bufferMinutes: plan.settings.bufferMinutes, assessmentEvery: 0, track: 'review' });
+    const at = ctx.now();
+    const doc: Curriculum = {
+      id: genId(),
+      title: str(r.title) || `[보충 제안] ${plan.title}`,
+      subject: plan.subject,
+      target: plan.target,
+      goal: `선행 전 기초 보충: ${str(r.goal) || plan.snapshot.advance?.targetDescription || ''}`.trim(),
+      textbooks: refs,
+      compositionMode: 'sequential',
+      sessions,
+      unassignedEntries: unassigned,
+      recommendedPerWeek: Math.max(1, plan.settings.weekdays.length),
+      recommendedMinutesPerSession: minutes,
+      reviewMinutesPerSession: plan.settings.reviewMinutes,
+      bufferMinutesPerSession: plan.settings.bufferMinutes,
+      assessmentEvery: 0,
+      curriculumVersion: 1,
+      status: 'draft',
+      origin: 'custom',
+      reviewComments: [{ id: genId(), at, by: user.displayName, text: `계획 '${plan.title}'의 선수 학습 부족 제안에서 만든 초안입니다. 검토 후 사용하세요.` }],
+      ...newMeta(user, at, plan.isSample),
+    };
+    store.insert('curriculum', doc);
+    store.audit({ at, userId: user.id, kind: 'curriculum', docId: doc.id, action: 'create_from_supplement', detail: `plan ${plan.id}` });
+    reply.code(201);
+    return doc;
+  });
+
+  /** 선행 과정의 기초 확인 (담당자 확정). 계획 스냅샷의 확인 여부만 바꾸고 과정 구조는 건드리지 않는다 */
+  app.post('/api/plans/:id/advance-confirm', async (req) => {
+    const user = requireUser(req);
+    const existing = mustAccess(user, store.mustGet<Plan>('plan', (req.params as { id: string }).id));
+    const version = expectVersion(req.body);
+    const r = req.body as Record<string, unknown>;
+    if (!existing.snapshot.advance) throw new HttpError(400, '선행 설정이 없는 계획입니다.');
+    const confirmed = bool(r.confirmed, true);
+    const note = str(r.note).trim();
+    if (confirmed && !note) throw new HttpError(400, '확인 근거(예: 진단 결과, 이해 확인 기록)를 적어 주세요.');
+    const at = ctx.now();
+    const advance = { ...existing.snapshot.advance, prerequisitesConfirmed: confirmed, prerequisitesConfirmedBy: confirmed ? user.displayName : undefined, prerequisitesConfirmedAt: confirmed ? at : undefined };
+    const doc: Plan = touched(
+      {
+        ...existing,
+        snapshot: { ...existing.snapshot, advance },
+        history: [...existing.history, { id: genId(), at, by: user.id, action: 'manual_edit', description: confirmed ? `선행 기초 확인: ${note}` : `선행 기초 확인 해제${note ? `: ${note}` : ''}` }],
+      },
+      user,
+      at,
+    );
+    return planResponse(store.update('plan', doc, version));
   });
 
   /** 동시 편집 알림용 가벼운 버전 조회 (교재·과정·계획) */

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import type { DayView, HolidaySet, LearningObjective, MonthView, OutputTemplate, Plan, PlanSettings, PlanViews, QuarterView, TextbookProgress, User, WeekView, YearView } from '@wb/shared';
 import { OBJECTIVE_STATE_LABEL, UNASSIGNED_REASON_LABEL, assignmentViews, fmtMinutes, resolveColumns, todayKST, type ObjectiveStatus, type ScheduleDiff } from '@wb/shared';
 import { get, post, put, errorMessage } from '../api.ts';
@@ -131,7 +131,7 @@ export function PlanDetailPage() {
       {tab === 'unassigned' && <UnassignedTab plan={plan} runOp={runOp} />}
       {tab === 'edit' && <EditTab plan={plan} runOp={runOp} openSettings={() => setSettingsOpen(true)} />}
       {tab === 'records' && <RecordsTab plan={plan} reload={load} />}
-      {tab === 'objectives' && <ObjectivesTab plan={plan} />}
+      {tab === 'objectives' && <ObjectivesTab plan={plan} onPlan={setPlan} />}
       {tab === 'history' && <HistoryTab plan={plan} runOp={runOp} />}
       {tab === 'output' && <OutputTab plan={plan} />}
 
@@ -882,7 +882,7 @@ function UnderstandingCheckForm({ plan, lessonId, reload }: { plan: PlanDoc; les
 // 학습목표
 // ──────────────────────────────────────────────
 
-function ObjectivesTab({ plan }: { plan: PlanDoc }) {
+function ObjectivesTab({ plan, onPlan }: { plan: PlanDoc; onPlan: (p: PlanDoc) => void }) {
   const { data, loading } = useAsync(() => get<{ statuses: ObjectiveStatus[]; advanceGaps: Array<{ objective: LearningObjective; reason: string }> }>(`/api/plans/${plan.id}/objectives`), [plan.version]);
   if (loading || !data) return <Loading />;
   const kind: Record<string, string> = { planned: 'info', progressed: 'primary', confirmed: 'ok', unassigned: 'danger' };
@@ -928,11 +928,172 @@ function ObjectivesTab({ plan }: { plan: PlanDoc }) {
                 <td className="small">{s.plannedDates.map((d) => d.slice(5)).join(', ')}</td>
                 <td className="small">{s.progressedDates.map((d) => d.slice(5)).join(', ')}</td>
                 <td className="small">{s.confirmedDates.map((d) => d.slice(5)).join(', ')}</td>
-                <td className="small">{s.occurrences.length > 1 ? s.occurrences.map((o) => `${o.date.slice(5)} ${o.purpose || o.activity}`).join(', ') : ''}</td>
+                <td className="small">
+                  {s.occurrences.length > 1 ? s.occurrences.map((o) => `${o.date.slice(5)} ${o.purpose || o.activity}`).join(', ') : ''}
+                  {s.repeatWithoutPurpose.length > 0 && (
+                    <div title="서로 다른 항목이 새 학습으로 같은 목표를 다시 다룹니다. 의도한 반복이면 과정 조립판에서 반복 목적(복습·심화·평가)을 지정하세요. 자동으로 지우지 않습니다.">
+                      <Badge kind="warn">목적 확인</Badge> {s.repeatWithoutPurpose.join(', ')}
+                    </div>
+                  )}
+                </td>
               </tr>
             ))}
           </tbody>
         </table>
+      </div>
+      {plan.snapshot.advance && <SupplementPanel plan={plan} onPlan={onPlan} />}
+    </div>
+  );
+}
+
+interface SupplementData {
+  advance: NonNullable<PlanDoc['snapshot']['advance']> | null;
+  objectives: Array<{ objective: LearningObjective; reason: string; viaPrerequisiteOf?: string }>;
+  items: Array<{ objectiveId: string; textbookId: string; textbookTitle: string; edition: string; itemId: string; itemTitle: string; range?: { from: number; to: number }; minutes: number }>;
+  objectivesWithoutMaterial: string[];
+}
+
+/** 선수 학습 부족 시 보충 제안과 담당자 확인 절차 */
+function SupplementPanel({ plan, onPlan }: { plan: PlanDoc; onPlan: (p: PlanDoc) => void }) {
+  const { user } = useAuth();
+  const nav = useNavigate();
+  const { data, loading, reload } = useAsync(() => get<SupplementData>(`/api/plans/${plan.id}/supplement`), [plan.version]);
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [note, setNote] = useState('');
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    if (data) setPicked(new Set(data.items.map((i) => `${i.textbookId}|${i.itemId}`)));
+  }, [data]);
+  if (loading || !data) return null;
+  const adv = data.advance!;
+  const key = (i: SupplementData['items'][number]) => `${i.textbookId}|${i.itemId}`;
+  const objName = (id: string) => {
+    const o = data.objectives.find((x) => x.objective.id === id)?.objective;
+    return o ? `${o.code} ${o.title}` : id;
+  };
+  const pickedItems = data.items.filter((i) => picked.has(key(i)));
+  const uniquePicked = pickedItems.filter((i, idx) => pickedItems.findIndex((x) => key(x) === key(i)) === idx);
+  const createDraft = async () => {
+    setBusy(true);
+    setErr('');
+    try {
+      const c = await post<{ id: string }>(`/api/plans/${plan.id}/supplement-curriculum`, { items: uniquePicked.map((i) => ({ textbookId: i.textbookId, itemId: i.itemId })) });
+      nav(`/curricula/${c.id}`);
+    } catch (e) {
+      setErr(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const confirm = async (confirmed: boolean) => {
+    setBusy(true);
+    setErr('');
+    try {
+      onPlan(await post<PlanDoc>(`/api/plans/${plan.id}/advance-confirm`, { confirmed, note, version: plan.version }));
+      setNote('');
+      reload();
+    } catch (e) {
+      setErr(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="panel tight mt supplement-panel">
+      <h3>선행 기초 확인과 보충 제안</h3>
+      <p className="small">
+        선행 목표: {adv.targetDescription || '-'} · 현재 학년 {adv.currentGrade || '-'} · 실제 단계 {adv.actualStage || '-'} · 현행 확보 {adv.currentMinMinutes}분
+      </p>
+      <p className="small">
+        기초 확인 상태:{' '}
+        {adv.prerequisitesConfirmed ? (
+          <Badge kind="ok">
+            확인됨 ({adv.prerequisitesConfirmedBy} · {adv.prerequisitesConfirmedAt?.slice(0, 10)})
+          </Badge>
+        ) : (
+          <Badge kind="warn">미확인 · 확인 전에는 계획을 확정할 수 없습니다</Badge>
+        )}
+      </p>
+      {err && <Alert kind="danger">{err}</Alert>}
+      {data.objectives.length === 0 ? (
+        <Alert kind="ok">기초 확인 항목이 모두 이해 확인 기록을 가지고 있습니다. 담당자가 확인하면 선행을 진행할 수 있습니다.</Alert>
+      ) : (
+        <>
+          <p className="small muted">아래 목표는 이해 확인 기록이 없습니다. 선수 목표는 담당자가 확인한 관계만 따라갔습니다. 제안일 뿐이며, 보충을 먼저 할지·선행을 그대로 진행할지는 담당자가 정합니다.</p>
+          <ul className="small">
+            {data.objectives.map((o) => (
+              <li key={o.objective.id}>
+                <strong>{o.objective.code}</strong> {o.objective.title} — {o.reason}
+                {data.objectivesWithoutMaterial.includes(o.objective.id) && <Badge kind="danger">연결된 교재 항목 없음 · 자료 준비 필요</Badge>}
+              </li>
+            ))}
+          </ul>
+          {data.items.length > 0 && (
+            <div className="table-wrap">
+              <table className="compact">
+                <thead>
+                  <tr>
+                    <th></th>
+                    <th>목표</th>
+                    <th>교재 (판본)</th>
+                    <th>학습항목</th>
+                    <th>범위</th>
+                    <th className="num">분</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.items.map((i, idx) => (
+                    <tr key={`${key(i)}-${i.objectiveId}-${idx}`}>
+                      <td>
+                        <input
+                          type="checkbox"
+                          aria-label={`${i.itemTitle} 보충에 포함`}
+                          checked={picked.has(key(i))}
+                          onChange={(e) => {
+                            const n = new Set(picked);
+                            if (e.target.checked) n.add(key(i));
+                            else n.delete(key(i));
+                            setPicked(n);
+                          }}
+                        />
+                      </td>
+                      <td className="small">{objName(i.objectiveId)}</td>
+                      <td className="small">
+                        {i.textbookTitle} <span className="muted">({i.edition})</span>
+                      </td>
+                      <td>{i.itemTitle}</td>
+                      <td className="small">{i.range ? `${i.range.from}~${i.range.to}쪽` : ''}</td>
+                      <td className="num">{i.minutes}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {user?.role === 'admin' ? (
+            <div className="row mt">
+              <button className="primary" disabled={busy || uniquePicked.length === 0} onClick={createDraft}>
+                고른 {uniquePicked.length}개 항목으로 보충 과정 초안 만들기
+              </button>
+              <span className="small muted">복습·보충 트랙의 초안 과정이 만들어지며, 검토 후 계획 만들기에서 사용합니다.</span>
+            </div>
+          ) : (
+            <p className="small muted mt">보충 과정 초안은 관리자가 만듭니다. 이 목록을 관리자에게 전달하세요.</p>
+          )}
+        </>
+      )}
+      <div className="row mt">
+        <input style={{ flex: 1, minWidth: 220 }} placeholder="확인 근거 (예: 10/12 진단평가 85점, 1~3단원 이해 확인 기록)" value={note} onChange={(e) => setNote(e.target.value)} aria-label="기초 확인 근거" />
+        {adv.prerequisitesConfirmed ? (
+          <button disabled={busy} onClick={() => confirm(false)}>
+            기초 확인 해제
+          </button>
+        ) : (
+          <button className="accent" disabled={busy || !note.trim()} onClick={() => confirm(true)}>
+            담당자 기초 확인
+          </button>
+        )}
       </div>
     </div>
   );

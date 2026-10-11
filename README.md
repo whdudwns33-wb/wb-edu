@@ -71,7 +71,7 @@ npm run backup
 ## 테스트
 
 ```bash
-npm test                 # vitest: shared 단위 77건 + server API 통합 29건
+npm test                 # vitest: shared 단위 83건 + server API 통합 30건
 npm run typecheck
 ```
 
