@@ -107,6 +107,11 @@ tr:hover td { background: #fafcff; }
 td.num, th.num { text-align: right; white-space: nowrap; }
 table.compact th, table.compact td { padding: 4px 6px; font-size: 12px; }
 table input, table select { padding: 4px 6px; font-size: 12px; width: 100%; }
+/* 표 안 입력칸이 좁은 화면에서 읽고 누를 수 없을 만큼 줄어들지 않게 */
+table input[type='number'] { min-width: 64px; }
+table input:not([type]), table input[type='text'], table input[type='date'] { min-width: 110px; }
+table select { min-width: 72px; }
+table input[type='checkbox'] { min-width: 0; width: 16px; }
 
 /* 탭 */
 .tabs { display: flex; gap: 2px; border-bottom: 2px solid var(--line); margin-bottom: 14px; overflow-x: auto; }
