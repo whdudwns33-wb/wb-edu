@@ -83,6 +83,8 @@ npm run typecheck
 - [docs/편성규칙.md](docs/편성규칙.md) — 자동 편성·재편성·진도 집계 규칙
 - [docs/가정과제한.md](docs/가정과제한.md) — 가정, 미구현, 제한 사항
 - [docs/테스트결과.md](docs/테스트결과.md) — 자동·실제 테스트 결과, 화면 예시
+- [docs/시범운영-가이드.md](docs/시범운영-가이드.md) — 실제 교재로 시범 운영하는 절차
+- [docs/배포-가이드.md](docs/배포-가이드.md) — 자동 시작·자동 백업(Windows 작업 스케줄러), HTTPS 프록시(Caddy), 업데이트·복구
 
 ## 주요 메뉴
 
