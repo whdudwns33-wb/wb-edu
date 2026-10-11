@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import type { AppSettings, HolidaySet, LearningObjective, OutputTemplate } from '@wb/shared';
-import { DEFAULT_STUDENT_COLUMNS, DEFAULT_TEACHER_COLUMNS, OUTPUT_COLUMNS, defaultHolidaySets, isISODate } from '@wb/shared';
+import { DEFAULT_STUDENT_COLUMNS, DEFAULT_TEACHER_COLUMNS, OUTPUT_COLUMNS, cleanSummaryColumns, defaultHolidaySets, isISODate } from '@wb/shared';
 import type { AppContext } from '../context.ts';
 import { HttpError, arr, bool, expectVersion, genId, newMeta, num, requireAdmin, requireUser, str, touched } from '../context.ts';
 
@@ -127,7 +127,7 @@ export function registerSettingsRoutes(app: FastifyInstance, ctx: AppContext) {
     const existing = store.mustGet<OutputTemplate>('template', id);
     const version = expectVersion(req.body);
     const r = req.body as Record<string, unknown>;
-    const doc: OutputTemplate = touched({ ...existing, name: str(r.name, existing.name), audience: str(r.audience) === 'student' ? 'student' : 'teacher', columns: validColumns(arr<string>(r.columns)), headerNote: str(r.headerNote, existing.headerNote), footerNote: str(r.footerNote, existing.footerNote) }, user, ctx.now());
+    const doc: OutputTemplate = touched({ ...existing, name: str(r.name, existing.name), audience: str(r.audience) === 'student' ? 'student' : 'teacher', columns: validColumns(arr<string>(r.columns)), summaryColumns: r.summaryColumns === undefined ? existing.summaryColumns : cleanSummaryColumns(r.summaryColumns), headerNote: str(r.headerNote, existing.headerNote), footerNote: str(r.footerNote, existing.footerNote) }, user, ctx.now());
     return store.update('template', doc, version);
   });
 
@@ -135,7 +135,7 @@ export function registerSettingsRoutes(app: FastifyInstance, ctx: AppContext) {
     const user = requireAdmin(req);
     const r = (req.body ?? {}) as Record<string, unknown>;
     const at = ctx.now();
-    const doc: OutputTemplate = { id: genId(), name: str(r.name) || '새 양식', audience: str(r.audience) === 'student' ? 'student' : 'teacher', columns: validColumns(arr<string>(r.columns)), headerNote: str(r.headerNote), footerNote: str(r.footerNote), ...newMeta(user, at) };
+    const doc: OutputTemplate = { id: genId(), name: str(r.name) || '새 양식', audience: str(r.audience) === 'student' ? 'student' : 'teacher', columns: validColumns(arr<string>(r.columns)), summaryColumns: cleanSummaryColumns(r.summaryColumns), headerNote: str(r.headerNote), footerNote: str(r.footerNote), ...newMeta(user, at) };
     store.insert('template', doc);
     reply.code(201);
     return doc;

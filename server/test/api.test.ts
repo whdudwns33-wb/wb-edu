@@ -369,6 +369,41 @@ describe('선행 보충 제안과 기초 확인 (시나리오 10)', () => {
   });
 });
 
+describe('동시 기록 자동 병합과 달력 내보내기', () => {
+  it('두 사람이 같은 버전 화면에서 동시에 기록해도 둘 다 저장된다 (기록은 추가만 하므로 병합)', async () => {
+    const p = (await asTeacher({ method: 'POST', url: '/api/plans', payload: { curriculumId: SAMPLE_IDS.curriculumParallel, settings } })).json();
+    const [a1, a2] = p.assignments.filter((a: { lessonId: string }) => a.lessonId === p.lessons[0].id);
+    const r1 = await asTeacher({ method: 'POST', url: `/api/plans/${p.id}/records`, payload: { assignmentId: a1.id, status: 'done', version: p.version } });
+    expect(r1.statusCode).toBe(200);
+    expect(r1.json().merged).toBe(false);
+    // 관리자는 이전 버전 화면에서 기록 → 409 대신 병합
+    const r2 = await asAdmin({ method: 'POST', url: `/api/plans/${p.id}/records`, payload: { assignmentId: a2.id, status: 'partial', completedFraction: 0.5, version: p.version } });
+    expect(r2.statusCode).toBe(200);
+    expect(r2.json().merged).toBe(true);
+    expect(r2.json().records.map((x: { assignmentId: string }) => x.assignmentId).sort()).toEqual([a1.id, a2.id].sort());
+    // 이해 확인도 병합
+    const c = await asTeacher({ method: 'POST', url: `/api/plans/${p.id}/checks`, payload: { lessonId: p.lessons[0].id, itemId: a1.itemId, textbookId: a1.textbookId, objectiveIds: [], result: 'confirmed', version: p.version } });
+    expect(c.statusCode).toBe(200);
+    expect(c.json().merged).toBe(true);
+    // 다른 사람이 재편성으로 배정을 없앤 뒤 옛 화면에서 기록하면 409로 새로 고침 안내
+    const bad = await asTeacher({ method: 'POST', url: `/api/plans/${p.id}/records`, payload: { assignmentId: 'gone', status: 'done', version: p.version } });
+    expect(bad.statusCode).toBe(409);
+    // 일정 변경 연산은 여전히 버전이 다르면 409 (덮어쓰기 방지)
+    const op = await asTeacher({ method: 'POST', url: `/api/plans/${p.id}/ops`, payload: { op: 'postpone', params: { lessonId: p.lessons[3].id }, version: p.version } });
+    expect(op.statusCode).toBe(409);
+  });
+
+  it('캘린더 파일(.ics)을 내려받는다', async () => {
+    const p = (await asTeacher({ method: 'GET', url: '/api/plans' })).json()[0];
+    const r = await asTeacher({ method: 'GET', url: `/api/plans/${p.id}/calendar.ics?audience=student` });
+    expect(r.statusCode).toBe(200);
+    expect(r.headers['content-type']).toContain('text/calendar');
+    expect(r.body.startsWith('BEGIN:VCALENDAR')).toBe(true);
+    expect(r.body).toContain('BEGIN:VEVENT');
+    expect(r.body).not.toContain('지도 메모');
+  });
+});
+
 describe('리뷰 결함 회귀 (서버)', () => {
   it('#8 스냅샷 갱신은 새 과정 구성으로 다시 편성하고, 기록이 있으면 거부하며, version 이 필요하다', async () => {
     // 관리자 소유의 새 과정 (2차시만) → 계획 → 과정에 차시 추가 → 스냅샷 갱신
@@ -481,5 +516,27 @@ describe('설정', () => {
     expect(n.json().count).toBeGreaterThan(0);
     const del = await asTeacher({ method: 'DELETE', url: '/api/samples' });
     expect(del.statusCode).toBe(403);
+  });
+});
+
+describe('연간·분기·월간 열 선택 (엑셀)', () => {
+  it('양식의 요약 열이 엑셀 연간·월간 시트 머리글에 반영된다', async () => {
+    const tpls = (await asAdmin({ method: 'GET', url: '/api/templates' })).json() as Array<{ id: string; audience: string }>;
+    const t = tpls.find((x) => x.audience === 'teacher')!;
+    const full = (await asAdmin({ method: 'GET', url: '/api/templates' })).json().find((x: { id: string }) => x.id === t.id);
+    const put = await asAdmin({ method: 'PUT', url: `/api/templates/${t.id}`, payload: { ...full, summaryColumns: { year: ['label', 'lessons', 'bad'], month: ['week', 'assigned'] } } });
+    expect(put.statusCode).toBe(200);
+    expect(put.json().summaryColumns).toEqual({ year: ['label', 'lessons'], month: ['week', 'assigned'] });
+    const p = (await asTeacher({ method: 'GET', url: '/api/plans' })).json()[0];
+    const x = await asTeacher({ method: 'GET', url: `/api/plans/${p.id}/export.xlsx?template=${t.id}&levels=year,month` });
+    expect(x.statusCode).toBe(200);
+    const ExcelJS = (await import('exceljs')).default;
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(x.rawPayload as never);
+    expect(wb.getWorksheet('연간')!.getRow(1).values).toEqual([undefined, '학년도', '수업 횟수']);
+    expect(wb.getWorksheet('월간')!.getRow(1).values).toEqual([undefined, '월', '주', '배정 분량']);
+    const total = [] as unknown[];
+    wb.getWorksheet('월간')!.eachRow((r) => { if (String(r.getCell(1).value).endsWith('합계')) total.push(r.values); });
+    expect(total.length).toBeGreaterThan(0);
   });
 });

@@ -590,8 +590,10 @@ export interface OutputTemplate extends AuditMeta {
   id: string;
   name: string;
   audience: 'teacher' | 'student';
-  /** 포함 열 */
+  /** 포함 열 (주간·일간 표) */
   columns: string[];
+  /** 연간·분기·월간 표의 열 (없거나 비면 대상별 기본 열) */
+  summaryColumns?: { year?: string[]; quarter?: string[]; month?: string[] };
   headerNote: string;
   footerNote: string;
 }

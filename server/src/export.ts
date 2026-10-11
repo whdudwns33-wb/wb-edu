@@ -4,7 +4,7 @@
  */
 import ExcelJS from 'exceljs';
 import type { OutputTemplate, Plan } from '@wb/shared';
-import { buildPlanViews, dayRows, fmtMinutes, resolveColumns, type DayView } from '@wb/shared';
+import { buildPlanViews, dayRows, fmtMinutes, resolveColumns, resolveSummaryColumns, type DayView } from '@wb/shared';
 
 export type Audience = 'teacher' | 'student';
 export type Level = 'year' | 'quarter' | 'month' | 'week' | 'day';
@@ -52,69 +52,34 @@ export async function buildWorkbook(plan: Plan, opts: ExportOptions): Promise<Bu
   for (const r of rows) cover.addRow(r);
   cover.getColumn(1).font = { bold: true };
 
+  // 연간·분기·월간 시트도 출력 양식의 열 선택을 따른다 (인쇄 보기와 같은 정의: shared/output.ts)
+  const sctx = { clean: (s: string) => s, reviewMinutes: plan.settings.reviewMinutes };
   if (opts.levels.includes('year')) {
     const ws = wb.addWorksheet('연간');
-    ws.addRow(['학년도', '기간', '수업 횟수', '총 수업시간', '새 진도 배정', '현행', '복습·보충', '선행', '교재 흐름']).font = { bold: true };
-    for (const y of views.years) {
-      ws.addRow([
-        y.label,
-        `${y.from} ~ ${y.to}`,
-        y.summary.lessonCount,
-        fmtMinutes(y.summary.totalMinutes),
-        fmtMinutes(y.summary.assignedMinutes),
-        fmtMinutes(y.summary.byTrack.current),
-        fmtMinutes(y.summary.byTrack.review),
-        fmtMinutes(y.summary.byTrack.advance),
-        y.textbookFlow.map((f) => `${f.title} ${f.firstDate}~${f.lastDate}`).join(' → '),
-      ]);
-    }
+    const cols = resolveSummaryColumns(opts.template, opts.audience, 'year');
+    ws.addRow(cols.map((c) => c.label)).font = { bold: true };
+    for (const y of views.years) ws.addRow(cols.map((c) => c.value(y, sctx)));
     ws.addRow([]);
     ws.addRow(['교육 목표', plan.snapshot.curriculumTitle]);
-    ws.addRow(['도달 목표(트랙)', ...views.years.flatMap((y) => y.trackTargets.map((t) => `${t.label} ${t.itemCount}항목 ${fmtMinutes(t.minutes)}`))]);
     autoWidth(ws);
   }
 
   if (opts.levels.includes('quarter')) {
     const ws = wb.addWorksheet('분기');
-    ws.addRow(['분기(학년도 기준)', '기간', '수업', '휴강', '보강', '새 진도', '교재별 범위', '복습·평가 시점', '단계·교재 전환']).font = { bold: true };
-    for (const y of views.years) {
-      for (const q of y.quarters) {
-        ws.addRow([
-          q.label,
-          `${q.from} ~ ${q.to}`,
-          q.summary.lessonCount,
-          q.summary.cancelledCount + q.summary.holidayCount,
-          q.summary.makeupCount,
-          fmtMinutes(q.summary.assignedMinutes),
-          q.summary.textbooks.map((t) => `${t.title}: ${t.rangeText}`).join(' / '),
-          [...q.summary.reviewDates.map((d) => `복습 ${d}`), ...q.summary.assessmentDates.map((d) => `평가 ${d}`)].join(', '),
-          q.transitions.join(', '),
-        ]);
-      }
-    }
+    const cols = resolveSummaryColumns(opts.template, opts.audience, 'quarter');
+    ws.addRow(cols.map((c) => c.label)).font = { bold: true };
+    for (const y of views.years) for (const q of y.quarters) ws.addRow(cols.map((c) => c.value(q, sctx)));
     autoWidth(ws);
   }
 
   if (opts.levels.includes('month')) {
     const ws = wb.addWorksheet('월간');
-    ws.addRow(['월', '주', '수업일', '수업 횟수', '가능 분량', '배정 분량', '휴강·보강', '현행', '복습·보충', '선행', '교재별 범위']).font = { bold: true };
+    const cols = resolveSummaryColumns(opts.template, opts.audience, 'month');
+    ws.addRow(['월', ...cols.map((c) => c.label)]).font = { bold: true };
     for (const y of views.years) for (const q of y.quarters) for (const m of q.months) {
-      for (const w of m.weeks) {
-        ws.addRow([
-          m.label,
-          w.label,
-          w.days.map((d) => d.lesson.date.slice(5)).join(', '),
-          w.summary.lessonCount,
-          fmtMinutes(w.summary.availableMinutes),
-          fmtMinutes(w.summary.assignedMinutes),
-          [w.summary.cancelledCount + w.summary.holidayCount ? `휴강 ${w.summary.cancelledCount + w.summary.holidayCount}` : '', w.summary.makeupCount ? `보강 ${w.summary.makeupCount}` : ''].filter(Boolean).join(' '),
-          fmtMinutes(w.summary.byTrack.current),
-          fmtMinutes(w.summary.byTrack.review),
-          fmtMinutes(w.summary.byTrack.advance),
-          w.summary.textbooks.map((t) => `${t.title}: ${t.rangeText}`).join(' / '),
-        ]);
-      }
-      ws.addRow([`${m.label} 합계`, '', '', m.summary.lessonCount, fmtMinutes(m.summary.availableMinutes), fmtMinutes(m.summary.assignedMinutes)]).font = { bold: true };
+      for (const w of m.weeks) ws.addRow([m.label, ...cols.map((c) => c.value(w, sctx))]);
+      const total: Record<string, string> = { lessons: `${m.summary.lessonCount}회`, available: fmtMinutes(m.summary.availableMinutes), assigned: fmtMinutes(m.summary.assignedMinutes) };
+      ws.addRow([`${m.label} 합계`, ...cols.map((c) => total[c.key] ?? '')]).font = { bold: true };
     }
     autoWidth(ws);
   }

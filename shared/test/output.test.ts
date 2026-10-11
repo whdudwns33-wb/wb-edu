@@ -50,3 +50,29 @@ describe('출력 양식 열 선택', () => {
     expect(rows2[0][6]).toBe('18~23쪽');
   });
 });
+
+describe('연간·분기·월간 표 열 선택', () => {
+  it('양식이 없으면 대상별 기본 열, 학생용은 내부 열(트랙별·가능 분량·총 수업시간) 제외', async () => {
+    const { resolveSummaryColumns, DEFAULT_SUMMARY_COLUMNS, cleanSummaryColumns } = await import('../src/output.ts');
+    expect(resolveSummaryColumns(null, 'teacher', 'month').map((c) => c.key)).toEqual(DEFAULT_SUMMARY_COLUMNS.teacher.month);
+    const student = resolveSummaryColumns({ summaryColumns: { month: ['week', 'tracks', 'available', 'textbooks'] } }, 'student', 'month').map((c) => c.key);
+    expect(student).toEqual(['week', 'textbooks']);
+    expect(resolveSummaryColumns({ summaryColumns: { year: ['flow', 'label'] } }, 'teacher', 'year').map((c) => c.key)).toEqual(['flow', 'label']);
+    expect(cleanSummaryColumns({ year: ['label', 'nope', 'label'], quarter: 'x', month: ['week'] })).toEqual({ year: ['label'], month: ['week'] });
+  });
+
+  it('월간 열 값이 같은 원본 집계와 일치한다', async () => {
+    const { resolveSummaryColumns } = await import('../src/output.ts');
+    const { buildPlanViews } = await import('../src/views.ts');
+    const w = sampleWorld();
+    const basic = w.curricula.find((c) => c.id === SAMPLE_IDS.curriculumBasic)!;
+    const { plan } = makePlan(basic, w.tbs, baseSettings({ startDate: '2026-03-30' }), ['2026-04-09']);
+    const v = buildPlanViews(plan);
+    const month = v.years[0].quarters[0].months.find((m) => m.key === '2026-04')!;
+    const cols = resolveSummaryColumns(null, 'teacher', 'month');
+    const row = Object.fromEntries(cols.map((c) => [c.key, c.value(month.weeks[1], { clean: (s) => s, reviewMinutes: 10 })]));
+    expect(row.days).toBe('04-06');
+    expect(row.offMakeup).toContain('04-09 공휴일');
+    expect(row.lessons).toBe('1회');
+  });
+});

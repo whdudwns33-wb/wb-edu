@@ -1,7 +1,7 @@
 import { useMemo } from 'react';
 import { useParams, useSearchParams } from 'react-router-dom';
 import type { AppSettings, OutputTemplate, Plan, PlanViews } from '@wb/shared';
-import { dayRows, extraLabelMap, fmtMinutes, resolveColumns } from '@wb/shared';
+import { dayRows, extraLabelMap, fmtMinutes, resolveColumns, resolveSummaryColumns, type SummaryColumnDef, type SummaryCtx } from '@wb/shared';
 import { get } from '../api.ts';
 import { Loading, useAsync } from '../components/ui.tsx';
 
@@ -29,11 +29,15 @@ export function PrintPage() {
   const audience: 'teacher' | 'student' = template ? template.audience : sp.get('audience') === 'student' ? 'student' : 'teacher';
   const teacher = audience === 'teacher';
   const columns = useMemo(() => resolveColumns(template, audience), [template, audience]);
+  const yearCols = useMemo(() => resolveSummaryColumns(template, audience, 'year'), [template, audience]);
+  const quarterCols = useMemo(() => resolveSummaryColumns(template, audience, 'quarter'), [template, audience]);
+  const monthCols = useMemo(() => resolveSummaryColumns(template, audience, 'month'), [template, audience]);
   const v = data?.views;
   const days = useMemo(() => (v ? v.years.flatMap((y) => y.quarters).flatMap((q) => q.months).flatMap((m) => m.weeks).flatMap((w) => w.days) : []), [v]);
   if (!plan || !v) return <Loading />;
   const h = v.header;
   const clean = (s: string) => s.replace(/^\[가상\]\s*/, '');
+  const sctx: SummaryCtx = { clean, reviewMinutes: plan.settings.reviewMinutes };
   const setParam = (k: string, val: string) => setSp({ ...Object.fromEntries(sp), [k]: val });
   const query = `audience=${audience}&levels=${levels.join(',')}${from && to ? `&from=${from}&to=${to}` : ''}${templateId ? `&template=${templateId}` : ''}`;
 
@@ -120,62 +124,14 @@ export function PrintPage() {
           <section>
             <h2>연간 계획</h2>
             <p>교육 목표: {clean(h.curriculumTitle)} · 학년도 시작월 {h.academicYearStartMonth}월</p>
-            <table>
-              <thead>
-                <tr>
-                  <th>학년도</th>
-                  <th>수업</th>
-                  <th>새 진도</th>
-                  <th>교재 흐름</th>
-                  <th>현행·복습·선행 도달 목표</th>
-                </tr>
-              </thead>
-              <tbody>
-                {v.years.map((y) => (
-                  <tr key={y.academicYear}>
-                    <td>{y.label}</td>
-                    <td>{y.summary.lessonCount}회</td>
-                    <td>{fmtMinutes(y.summary.assignedMinutes)}</td>
-                    <td>{y.textbookFlow.map((f) => `${clean(f.title)} ${f.firstDate}~${f.lastDate}`).join(' → ')}</td>
-                    <td>{y.trackTargets.filter((t) => t.minutes > 0).map((t) => `${t.label} ${t.itemCount}항목 ${fmtMinutes(t.minutes)}`).join(', ')}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <SummaryTable cols={yearCols} rows={v.years} rowKey={(y) => String(y.academicYear)} ctx={sctx} />
           </section>
         )}
 
         {levels.includes('quarter') && (
           <section className="page-break">
             <h2>분기 계획 (학년도 기준)</h2>
-            <table>
-              <thead>
-                <tr>
-                  <th>분기</th>
-                  <th>기간</th>
-                  <th>수업</th>
-                  <th>교재별 배치</th>
-                  <th>복습·평가 시점</th>
-                  <th>전환</th>
-                </tr>
-              </thead>
-              <tbody>
-                {v.years.flatMap((y) => y.quarters).map((q) => (
-                  <tr key={q.key}>
-                    <td>{q.label}</td>
-                    <td>
-                      {q.from}~{q.to}
-                    </td>
-                    <td>
-                      {q.summary.lessonCount}회{q.summary.cancelledCount + q.summary.holidayCount ? ` (휴강 ${q.summary.cancelledCount + q.summary.holidayCount})` : ''}
-                    </td>
-                    <td>{q.summary.textbooks.map((t) => `${clean(t.title)}: ${t.rangeText}`).join(' / ')}</td>
-                    <td>{[...q.summary.reviewDates.map((d) => `복습 ${d}`), ...q.summary.assessmentDates.map((d) => `평가 ${d}`)].join(', ') || `회당 복습 ${plan.settings.reviewMinutes}분`}</td>
-                    <td>{q.transitions.map(clean).join(', ')}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <SummaryTable cols={quarterCols} rows={v.years.flatMap((y) => y.quarters)} rowKey={(q) => q.key} ctx={sctx} />
           </section>
         )}
 
@@ -185,38 +141,9 @@ export function PrintPage() {
             {v.years.flatMap((y) => y.quarters).flatMap((q) => q.months).map((m) => (
               <div key={m.key}>
                 <h3>
-                  {m.label} <small>(수업 {m.summary.lessonCount}회 · 새 진도 {fmtMinutes(m.summary.assignedMinutes)} / 가능 {fmtMinutes(m.summary.availableMinutes)})</small>
+                  {m.label} <small>(수업 {m.summary.lessonCount}회 · 새 진도 {fmtMinutes(m.summary.assignedMinutes)}{teacher ? ` / 가능 ${fmtMinutes(m.summary.availableMinutes)}` : ''})</small>
                 </h3>
-                <table>
-                  <thead>
-                    <tr>
-                      <th>주</th>
-                      <th>실제 수업일</th>
-                      <th>가능/배정</th>
-                      <th>휴강·보강</th>
-                      {teacher && <th>트랙별</th>}
-                      <th>주별 진도</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {m.weeks.map((w) => (
-                      <tr key={w.key}>
-                        <td>{w.label}</td>
-                        <td>{w.days.filter((d) => d.lesson.status === 'scheduled' || d.lesson.status === 'makeup').map((d) => d.lesson.date.slice(5)).join(', ')}</td>
-                        <td>
-                          {w.summary.availableMinutes}/{w.summary.assignedMinutes}분
-                        </td>
-                        <td>{w.days.filter((d) => d.lesson.status === 'cancelled' || d.lesson.status === 'holiday').map((d) => `${d.lesson.date.slice(5)} ${d.lesson.note}`).join(', ')}{w.summary.makeupCount ? ` 보강 ${w.summary.makeupCount}` : ''}</td>
-                        {teacher && (
-                          <td>
-                            현행 {w.summary.byTrack.current} / 복습보충 {w.summary.byTrack.review} / 선행 {w.summary.byTrack.advance}
-                          </td>
-                        )}
-                        <td>{w.summary.textbooks.map((t) => `${clean(t.title)}: ${t.rangeText}`).join(' / ')}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                <SummaryTable cols={monthCols} rows={m.weeks} rowKey={(w) => `${w.key}-${w.from}`} ctx={sctx} />
               </div>
             ))}
           </section>
@@ -286,5 +213,28 @@ export function PrintPage() {
         <p style={{ marginTop: 16, fontSize: '9pt' }}>{v.completionBasis}</p>
       </div>
     </div>
+  );
+}
+
+function SummaryTable<Row>({ cols, rows, rowKey, ctx }: { cols: SummaryColumnDef<Row>[]; rows: Row[]; rowKey: (r: Row) => string; ctx: SummaryCtx }) {
+  return (
+    <table>
+      <thead>
+        <tr>
+          {cols.map((c) => (
+            <th key={c.key}>{c.label}</th>
+          ))}
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((r) => (
+          <tr key={rowKey(r)}>
+            {cols.map((c) => (
+              <td key={c.key}>{c.value(r, ctx)}</td>
+            ))}
+          </tr>
+        ))}
+      </tbody>
+    </table>
   );
 }

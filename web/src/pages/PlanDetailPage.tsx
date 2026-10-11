@@ -1219,8 +1219,11 @@ function OutputTab({ plan }: { plan: PlanDoc }) {
         <a className="btn" href={`/api/plans/${plan.id}/export.xlsx?${q}`}>
           엑셀 다운로드
         </a>
+        <a className="btn" href={`/api/plans/${plan.id}/calendar.ics?audience=${effectiveAudience}`} title="구글·애플·아웃룩 캘린더의 '가져오기'로 수업일을 넣습니다. 다시 내보내 가져오면 같은 일정이 갱신됩니다.">
+          캘린더 파일(.ics)
+        </a>
       </div>
-      <p className="muted small mt">PDF는 인쇄 보기에서 브라우저의 'PDF로 저장'을 사용합니다. 화면·엑셀·인쇄 모두 같은 집계 함수를 사용하므로 범위·시간·버전이 일치합니다 (계획 v{plan.planVersion}).</p>
+      <p className="muted small mt">PDF는 인쇄 보기에서 브라우저의 'PDF로 저장'을 사용합니다. 화면·엑셀·인쇄 모두 같은 집계 함수를 사용하므로 범위·시간·버전이 일치합니다 (계획 v{plan.planVersion}). 캘린더 파일은 수업마다 종일 일정 하나이며, 학생·학부모용은 지도 메모를 넣지 않습니다.</p>
     </div>
   );
 }

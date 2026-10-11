@@ -18,6 +18,7 @@ import {
   itemCompletionSummary,
   objectiveMap,
   overbookedLessons,
+  planToIcal,
   pinAssignment,
   postponeLesson,
   remainingAfterRecord,
@@ -396,14 +397,17 @@ export function registerPlanRoutes(app: FastifyInstance, ctx: AppContext) {
   /** 실제 진도 기록 (추가만 하며, 최신 기록이 유효) */
   app.post('/api/plans/:id/records', async (req) => {
     const user = requireUser(req);
+    // 기록은 추가만 하므로, 다른 사람이 먼저 저장해 버전이 달라도 최신 계획에 그대로 덧붙인다 (자동 병합).
+    // 서버에서 읽기~저장 사이에 await 가 없어 이 처리 안에서는 다른 저장이 끼어들지 않는다.
     const existing = mustAccess(user, store.mustGet<Plan>('plan', (req.params as { id: string }).id));
-    const version = expectVersion(req.body);
-    const r = req.body as Record<string, unknown>;
+    const r = (req.body ?? {}) as Record<string, unknown>;
+    const merged = typeof r.version === 'number' && r.version !== existing.version;
     const a = existing.assignments.find((x) => x.id === str(r.assignmentId));
-    if (!a) throw new HttpError(400, '배정을 찾을 수 없습니다.');
+    if (!a) throw new HttpError(merged ? 409 : 400, merged ? '다른 사용자가 일정을 바꿔 이 배정이 없어졌습니다. 새로 고친 뒤 다시 기록하세요.' : '배정을 찾을 수 없습니다.');
     const status = str(r.status);
     if (!['done', 'partial', 'not_done', 'excluded'].includes(status)) throw new HttpError(400, '상태 값이 올바르지 않습니다.');
-    const lesson = existing.lessons.find((l) => l.id === a.lessonId)!;
+    const lesson = existing.lessons.find((l) => l.id === a.lessonId);
+    if (!lesson) throw new HttpError(409, '이 배정의 수업을 찾을 수 없습니다. 새로 고친 뒤 다시 기록하세요.');
     const cp = r.completedPortion as { from?: unknown; to?: unknown } | undefined;
     const at = ctx.now();
     const rec: ProgressRecord = {
@@ -423,15 +427,16 @@ export function registerPlanRoutes(app: FastifyInstance, ctx: AppContext) {
     if (status === 'excluded' && !rec.reason) throw new HttpError(400, '제외 사유를 입력하세요.');
     if (status === 'partial' && !rec.completedPortion && rec.completedFraction === undefined) throw new HttpError(400, '부분 완료는 완료한 범위 또는 비율이 필요합니다.');
     const doc: Plan = touched({ ...existing, records: [...existing.records, rec], history: [...existing.history, { id: genId(), at, by: user.id, action: 'record', description: `${lesson.date} 기록: ${status}` }] }, user, at);
-    const saved = store.update('plan', doc, version);
-    return { ...planResponse(saved), remaining: remainingAfterRecord(saved, a.id) };
+    const saved = store.update('plan', doc, existing.version);
+    return { ...planResponse(saved), remaining: remainingAfterRecord(saved, a.id), merged };
   });
 
   app.post('/api/plans/:id/checks', async (req) => {
     const user = requireUser(req);
+    // 이해 확인도 추가만 하므로 버전이 달라도 최신 계획에 덧붙인다 (자동 병합)
     const existing = mustAccess(user, store.mustGet<Plan>('plan', (req.params as { id: string }).id));
-    const version = expectVersion(req.body);
-    const r = req.body as Record<string, unknown>;
+    const r = (req.body ?? {}) as Record<string, unknown>;
+    const merged = typeof r.version === 'number' && r.version !== existing.version;
     const lesson = existing.lessons.find((l) => l.id === str(r.lessonId));
     if (!lesson) throw new HttpError(400, '수업을 찾을 수 없습니다.');
     const result = str(r.result);
@@ -439,7 +444,7 @@ export function registerPlanRoutes(app: FastifyInstance, ctx: AppContext) {
     const at = ctx.now();
     const chk: UnderstandingCheck = { id: genId(), lessonId: lesson.id, itemId: str(r.itemId), textbookId: str(r.textbookId), objectiveIds: arr<string>(r.objectiveIds), result: result as UnderstandingCheck['result'], note: str(r.note), checkedAt: at, checkedBy: user.id };
     const doc: Plan = touched({ ...existing, understandingChecks: [...existing.understandingChecks, chk] }, user, at);
-    return planResponse(store.update('plan', doc, version));
+    return { ...planResponse(store.update('plan', doc, existing.version)), merged };
   });
 
   app.post('/api/plans/:id/confirm', async (req) => {
@@ -552,6 +557,18 @@ export function registerPlanRoutes(app: FastifyInstance, ctx: AppContext) {
       }
     }
     return { date, lessons: out };
+  });
+
+  /** 달력 파일(.ics) 내보내기: 구글·애플·아웃룩 캘린더에서 '가져오기'로 사용 */
+  app.get('/api/plans/:id/calendar.ics', async (req, reply) => {
+    const user = requireUser(req);
+    const plan = mustAccess(user, store.mustGet<Plan>('plan', (req.params as { id: string }).id));
+    const q = req.query as { audience?: string; cancelled?: string };
+    const body = planToIcal(plan, { audience: q.audience === 'student' ? 'student' : 'teacher', includeCancelled: q.cancelled === '1' });
+    const fname = encodeURIComponent(`${plan.title}_v${plan.planVersion}.ics`);
+    reply.header('Content-Type', 'text/calendar; charset=utf-8');
+    reply.header('Content-Disposition', `attachment; filename*=UTF-8''${fname}`);
+    return reply.send(body);
   });
 
   /** 선수 학습 부족 시 보충 제안 (제안만, 확정은 담당자) */

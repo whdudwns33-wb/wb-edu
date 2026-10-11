@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { AppSettings, Holiday, HolidaySet, OutputTemplate, User } from '@wb/shared';
-import { OUTPUT_COLUMNS, resolveColumns } from '@wb/shared';
+import { DEFAULT_SUMMARY_COLUMNS, MONTH_COLUMNS, OUTPUT_COLUMNS, QUARTER_COLUMNS, YEAR_COLUMNS, resolveColumns } from '@wb/shared';
 import { get, post, put, del, errorMessage } from '../api.ts';
 import { useAuth } from '../auth.tsx';
 import { Alert, Badge, Field, Loading, Tabs, useAsync, usePrompt } from '../components/ui.tsx';
@@ -221,6 +221,38 @@ function TemplateRow({ t, readOnly, onSaved, onError }: { t: OutputTemplate; rea
         )}
       </div>
       <div className="muted small mt">실제 출력 열 (선택 순서대로): {effective}</div>
+      <details className="mt">
+        <summary className="small">연간·분기·월간 표 열</summary>
+        {(
+          [
+            ['year', '연간', YEAR_COLUMNS],
+            ['quarter', '분기', QUARTER_COLUMNS],
+            ['month', '월간 (주별 행)', MONTH_COLUMNS],
+          ] as const
+        ).map(([level, label, defs]) => {
+          const current = f.summaryColumns?.[level]?.length ? f.summaryColumns[level]! : DEFAULT_SUMMARY_COLUMNS[f.audience][level];
+          return (
+            <div key={level} className="row mt" aria-label={`${label} 표 열`}>
+              <strong className="small" style={{ minWidth: 90 }}>{label}</strong>
+              {defs.map((c) => (
+                <label key={c.key} className="check" title={c.internal ? '내부용 열: 학생·학부모용 양식에서는 출력되지 않습니다' : ''} style={c.internal && f.audience === 'student' ? { opacity: 0.45 } : undefined}>
+                  <input
+                    type="checkbox"
+                    disabled={readOnly}
+                    checked={current.includes(c.key)}
+                    onChange={(e) => {
+                      const next = e.target.checked ? [...current, c.key] : current.filter((k) => k !== c.key);
+                      setF({ ...f, summaryColumns: { ...(f.summaryColumns ?? {}), [level]: next } });
+                    }}
+                  />{' '}
+                  {c.label}
+                  {c.internal && <span className="muted small">(내부)</span>}
+                </label>
+              ))}
+            </div>
+          );
+        })}
+      </details>
     </div>
   );
 }
