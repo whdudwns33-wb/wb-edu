@@ -212,3 +212,64 @@ describe('2차 리뷰에서 찾은 목차 인식 오류', () => {
     expect(textItemsToLines(items)).toEqual(['1. 중심 문장 찾기 12 부록 해설', '2. 문단 요약하기 24', '3. 글의 구조 36']);
   });
 });
+
+describe('사진·스캔 2단 목차의 읽는 순서 (글자 인식 단어 위치 사용)', () => {
+  // 글자 높이 20px, 단어 사이 10px 로 단어 위치를 흉내 낸다
+  const line = (y: number, x: number, words: string[]) => {
+    let cx = x;
+    const ws = words.map((t) => {
+      const w = { text: t, bbox: { x0: cx, y0: y, x1: cx + t.length * 12, y1: y + 20 } };
+      cx = w.bbox.x1 + 10;
+      return w;
+    });
+    return { bbox: { x0: x, y0: y, x1: cx - 10, y1: y + 20 }, words: ws };
+  };
+
+  it('엔진이 두 단을 따로 읽어도, 한 줄로 이어 붙여도 왼쪽 단 → 오른쪽 단 순서로 만든다', async () => {
+    const { ocrLinesToTocLines } = await import('../src/toc.ts');
+    const leftCol = [
+      line(100, 40, ['1단원', '중심', '생각']),
+      line(140, 50, ['1.', '중심', '문장', '찾기', 'Ce', '12']),
+      line(180, 50, ['2.', '문단', '요약하기', '......', '24']),
+    ];
+    const rightCol = [
+      line(101, 600, ['2단원', '설명하는', '글']),
+      line(141, 610, ['1.', '설명', '방법', '20200', '36']),
+      line(181, 610, ['2.', '글의', '구조', '......', '48']),
+    ];
+    const expected = ['1단원 중심 생각', '1. 중심 문장 찾기 ........ 12', '2. 문단 요약하기 ........ 24', '2단원 설명하는 글', '1. 설명 방법 ........ 36', '2. 글의 구조 ........ 48'];
+    // 엔진이 오른쪽 단을 먼저 내놓은 경우
+    expect(ocrLinesToTocLines([...rightCol, ...leftCol])).toEqual(expected);
+    // 엔진이 같은 높이의 두 단을 한 줄로 합친 경우
+    const merged = leftCol.map((l, i) => ({ bbox: { ...l.bbox, x1: rightCol[i].bbox.x1 }, words: [...l.words, ...rightCol[i].words] }));
+    expect(ocrLinesToTocLines(merged)).toEqual(expected);
+    const p = parseToc(expected.join('\n'), { lastPage: 59 });
+    expect(p.items.map((i) => `${i.range!.from}-${i.range!.to}`)).toEqual(['12-23', '24-35', '36-47', '48-59']);
+  });
+
+  it('1단 목차는 그대로 위에서 아래로 읽는다', async () => {
+    const { ocrLinesToTocLines } = await import('../src/toc.ts');
+    const lines = [line(140, 50, ['1.', '중심', '문장', '찾기', '......', '12']), line(100, 40, ['1단원', '중심', '생각']), line(180, 50, ['2.', '문단', '요약하기', '24'])];
+    expect(ocrLinesToTocLines(lines)).toEqual(['1단원 중심 생각', '1. 중심 문장 찾기 ........ 12', '2. 문단 요약하기 24']);
+  });
+});
+
+describe('실제 글자 인식 엔진 결과로 2단 목차 읽기', () => {
+  it('엔진이 두 단을 한 줄로 합친 실제 결과를 단 순서·한글 띄어쓰기대로 만든다', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { ocrLinesToTocLines } = await import('../src/toc.ts');
+    const f = JSON.parse(readFileSync(new URL('./fixtures/ocr-2col-toc.json', import.meta.url), 'utf8'));
+    const lines = ocrLinesToTocLines(f.lines);
+    expect(lines).toEqual([
+      '1단원 중심 생각',
+      '1. 중심 문장 찾기 ........ 12',
+      '2. 문단 요약하기 ........ 24',
+      '3단원 주장하는 글',
+      '1. 주장과 근거 ........ 60',
+      '2단원 설명하는 글',
+      '1. 설명 방법 파악하기 ........ 36',
+      '2. 글의 구조 파악하기 ........ 48',
+      '3. 단원 정리 ........ 56',
+    ]);
+  });
+});

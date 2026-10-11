@@ -4,7 +4,7 @@
  *  - 엔진·한국어/영어 데이터는 앱 안(/ocr/)에서 받는다. 외부 서버로 이미지나 요청을 보내지 않는다
  *  - 인식 결과에는 오탈자가 있을 수 있으므로 반드시 사람이 확인·수정한 뒤 미리보기로 넘긴다
  */
-import { normalizeOcrLine } from '@wb/shared';
+import { normalizeOcrLine, ocrLinesToTocLines, type OcrLineInput } from '@wb/shared';
 
 export interface OcrProgress {
   status: string;
@@ -35,11 +35,19 @@ export async function recognizeImages(images: Array<Blob | HTMLCanvasElement>, o
     const lines: string[] = [];
     const confidences: number[] = [];
     for (; page < images.length; page++) {
-      const { data } = await worker.recognize(images[page]);
+      // blocks: 줄·단어의 위치. 2단 목차를 '왼쪽 단 → 오른쪽 단' 순서로 다시 읽는 데 쓴다
+      const { data } = await worker.recognize(images[page], {}, { text: true, blocks: true });
       confidences.push(data.confidence);
-      for (const raw of data.text.split('\n')) {
-        const l = normalizeOcrLine(raw);
-        if (l) lines.push(l);
+      const ocrLines: OcrLineInput[] = (data.blocks ?? []).flatMap((b) =>
+        b.paragraphs.flatMap((pa) => pa.lines.map((l) => ({ bbox: l.bbox, text: l.text, words: l.words.map((w) => ({ text: w.text, bbox: w.bbox })) }))),
+      );
+      if (ocrLines.length) lines.push(...ocrLinesToTocLines(ocrLines));
+      else {
+        // 위치 정보가 없으면 엔진이 준 텍스트 순서를 그대로 쓴다
+        for (const raw of data.text.split('\n')) {
+          const l = normalizeOcrLine(raw);
+          if (l) lines.push(l);
+        }
       }
     }
     return { lines, confidence: confidences.length ? Math.round(confidences.reduce((a, b) => a + b, 0) / confidences.length) : 0 };

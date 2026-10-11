@@ -155,14 +155,15 @@ export function parseToc(text: string, opts: TocOptions = {}): ImportPreview {
   return { items, issues, headers: ['대단원', '제목', '시작', '끝'], rowCount: lines.length };
 }
 
-type Part = { x: number; str: string; w: number };
+/** space: 앞 조각과 띄어 쓰는지 (글자 인식처럼 위치로 띄어쓰기를 알 수 없을 때만 지정) */
+type Part = { x: number; str: string; w: number; space?: boolean };
 
 function joinParts(parts: Part[]): string {
   let out = '';
   let lastEnd = -Infinity;
   for (const p of parts) {
-    // 조각 사이가 떨어져 있으면 공백을 넣는다
-    if (out && p.x - lastEnd > 1) out += ' ';
+    // 조각 사이가 떨어져 있으면 공백을 넣는다 (띄어쓰기를 따로 알려 준 조각은 그대로 따른다)
+    if (out && (p.space ?? p.x - lastEnd > 1)) out += ' ';
     out += p.str;
     lastEnd = p.x + p.w;
   }
@@ -191,10 +192,17 @@ export function textItemsToLines(items: Array<{ str: string; transform: number[]
     row.parts.push({ x, str: it.str, w: it.width ?? 0 });
   }
   rows.sort((a, b) => b.y - a.y);
+  return splitColumns(rows.map((r) => r.parts), minColumnGap);
+}
 
+/**
+ * 위에서 아래 순서의 줄(각 줄은 x 위치가 있는 조각들)을 목차 읽는 순서의 텍스트 줄로 만든다.
+ * 2단이면 왼쪽 단을 모두 읽은 뒤 오른쪽 단을 읽는다. clean 은 판정 전에 조각 텍스트를 정리하는 함수(글자 인식용).
+ */
+function splitColumns(rows: Part[][], minColumnGap: number, clean: (s: string) => string = (s) => s): string[] {
   // 각 줄을 단 조각(segment)으로 나눈다
   const segRows = rows.map((r) => {
-    const parts = [...r.parts].sort((a, b) => a.x - b.x);
+    const parts = [...r].sort((a, b) => a.x - b.x);
     const segs: Part[][] = [[]];
     for (let i = 0; i < parts.length; i++) {
       const p = parts[i];
@@ -202,12 +210,13 @@ export function textItemsToLines(items: Array<{ str: string; transform: number[]
       if (cur.length) {
         const prev = cur[cur.length - 1];
         const gap = p.x - (prev.x + prev.w);
-        const leftText = joinParts(cur);
-        const rightStart = p.str.trim();
+        const leftText = clean(joinParts(cur));
+        // 오른쪽 조각은 그 줄의 나머지 전체로 본다 (글자 인식은 '1.' 과 제목을 따로 주므로)
+        const rightText = clean(joinParts(parts.slice(i)));
         // 왼쪽 조각이 '제목 + 쪽번호' 꼴이어야 한다 ('1'이나 'PART 1' 처럼 숫자로 끝나는 머리말만으로는 단을 나누지 않음)
         const leftLine = /[A-Za-z가-힣]/.test(leftText) ? classifyTocLines(leftText).lines[0] : undefined;
         const leftIsEntry = leftLine?.page !== undefined;
-        const looksLikeColumnBreak = gap >= minColumnGap && leftIsEntry && /[A-Za-z가-힣]/.test(rightStart) && !/^[.·…‥_\-–—]/.test(rightStart);
+        const looksLikeColumnBreak = gap >= minColumnGap && leftIsEntry && /[A-Za-z가-힣]/.test(rightText) && !/^[.·…‥_\-–—]/.test(rightText);
         if (looksLikeColumnBreak) {
           segs.push([p]);
           continue;
@@ -221,21 +230,87 @@ export function textItemsToLines(items: Array<{ str: string; transform: number[]
   const splitStarts = segRows.flatMap((segs) => segs.slice(1).map((s) => s[0].x));
   // 한 줄만 나뉘어 보이는 것은 우연(넓은 빈칸이 있는 제목)일 수 있으므로, 두 줄 이상에서 나뉠 때만 2단으로 본다
   const splitRowCount = segRows.filter((segs) => segs.length > 1).length;
-  if (splitStarts.length === 0 || splitRowCount < 2) return rows.map((r) => joinParts([...r.parts].sort((a, b) => a.x - b.x))).filter(Boolean);
+  if (splitStarts.length === 0 || splitRowCount < 2) return rows.map((r) => joinParts([...r].sort((a, b) => a.x - b.x))).filter(Boolean);
 
   // 오른쪽 단의 시작 x: 확실히 나뉜 조각들의 가장 왼쪽 시작점.
   // 이 경계를 모든 줄에 적용한다 (쪽번호 없는 대단원 줄도 두 단에 걸쳐 있을 수 있으므로).
-  const splitX = Math.min(...splitStarts) - 5;
+  const colStart = Math.min(...splitStarts);
+  const splitX = colStart - 5;
   const left: string[] = [];
   const right: string[] = [];
-  for (const r of rows) {
-    const parts = [...r.parts].sort((a, b) => a.x - b.x);
-    const l = joinParts(parts.filter((p) => p.x < splitX));
-    const rt = joinParts(parts.filter((p) => p.x >= splitX));
+  rows.forEach((r, ri) => {
+    const parts = [...r].sort((a, b) => a.x - b.x);
+    let cut: number;
+    if (segRows[ri].length > 1) {
+      // 단 경계가 확실한 줄
+      cut = segRows[ri][1][0].x;
+    } else {
+      // 대단원 줄처럼 쪽번호가 없어 확실하지 않은 줄: 오른쪽 단 시작 근처(내어쓰기 허용)의 넓은 빈칸에서 나눈다
+      const i = parts.findIndex((p, k) => k > 0 && p.x - (parts[k - 1].x + parts[k - 1].w) >= minColumnGap && p.x >= colStart - 2 * minColumnGap);
+      cut = i > 0 ? parts[i].x : splitX;
+    }
+    const l = joinParts(parts.filter((p) => p.x < cut));
+    const rt = joinParts(parts.filter((p) => p.x >= cut));
     if (l) left.push(l);
     if (rt) right.push(rt);
-  }
+  });
   return [...left, ...right];
+}
+
+/** 글자 인식 엔진(tesseract)이 준 줄·단어 위치. bbox 는 이미지 좌표(위가 0) */
+export interface OcrLineInput {
+  bbox: { x0: number; y0: number; x1: number; y1: number };
+  /** 엔진이 띄어쓰기를 넣은 줄 텍스트. 한글은 단어 위치가 글자 단위로 쪼개지고 겹치기도 해 위치로 띄어쓰기를 알 수 없다 */
+  text?: string;
+  words: Array<{ text: string; bbox: { x0: number; y0: number; x1: number; y1: number } }>;
+}
+
+/**
+ * 글자 인식 결과의 줄·단어 위치로 목차 줄을 만든다.
+ * 엔진은 2단 목차의 두 단을 다른 덩어리로 읽거나 한 줄로 이어 붙이기도 하므로, 같은 높이의 줄을 다시 한 줄로 모은 뒤
+ * PDF 2단 목차와 같은 규칙(제목+쪽번호 뒤 넓은 빈칸)으로 단을 나눈다. 빈칸 기준은 글자 높이에 비례한다.
+ */
+export function ocrLinesToTocLines(lines: OcrLineInput[]): string[] {
+  const valid = lines.filter((l) => l.words.some((w) => w.text.trim()));
+  if (valid.length === 0) return [];
+  const heights = valid.map((l) => Math.max(1, l.bbox.y1 - l.bbox.y0)).sort((a, b) => a - b);
+  const medianHeight = heights[Math.floor(heights.length / 2)];
+  const sorted = [...valid].sort((a, b) => a.bbox.y0 + a.bbox.y1 - (b.bbox.y0 + b.bbox.y1));
+  const rows: Array<{ top: number; bottom: number; parts: Part[] }> = [];
+  for (const l of sorted) {
+    const center = (l.bbox.y0 + l.bbox.y1) / 2;
+    const row = rows.find((r) => center >= r.top && center <= r.bottom);
+    const parts = wordParts(l);
+    if (row) {
+      row.parts.push(...parts);
+      row.top = Math.min(row.top, l.bbox.y0);
+      row.bottom = Math.max(row.bottom, l.bbox.y1);
+    } else rows.push({ top: l.bbox.y0, bottom: l.bbox.y1, parts });
+  }
+  return splitColumns(
+    rows.map((r) => r.parts),
+    Math.max(20, medianHeight * 2.5),
+    normalizeOcrLine,
+  )
+    .map(normalizeOcrLine)
+    .filter(Boolean);
+}
+
+/** 줄의 단어를 조각으로: 띄어쓰기는 줄 텍스트에서 단어 사이에 빈칸이 있었는지로 정한다 */
+function wordParts(l: OcrLineInput): Part[] {
+  const words = l.words.filter((w) => w.text.trim());
+  let pos = 0;
+  return words.map((w, i) => {
+    const part: Part = { x: w.bbox.x0, w: w.bbox.x1 - w.bbox.x0, str: w.text.trim() };
+    if (l.text === undefined) return part;
+    const idx = l.text.indexOf(part.str, pos);
+    // 줄 텍스트에서 찾지 못한 단어는 띄어 쓴다 (글자를 붙여 잘못된 단어를 만들지 않도록)
+    if (idx < 0) return { ...part, space: true };
+    const between = l.text.slice(pos, idx);
+    pos = idx + part.str.length;
+    // 줄의 첫 단어는 같은 높이의 다른 줄과 이어질 때 띄어 쓴다
+    return { ...part, space: i === 0 || /\s/.test(between) };
+  });
 }
 
 /** OCR 결과를 목차 줄로 정리: 공백 정리, 점선 통일, 숫자 사이 잘못 들어간 공백 제거 */
@@ -246,6 +321,8 @@ export function normalizeOcrLine(s: string): string {
     .replace(/(\.\s*){3,}/g, ' ........ ')
     // 점선 뒤 쪽번호가 '1 2'로 갈라져 읽힌 경우만 '12'로 붙인다 (제목 안의 '2 3' 같은 숫자는 건드리지 않음)
     .replace(/(\.{3,}\s*)(\d)\s+(\d{1,3})\s*$/, '$1$2$3')
+    // 점선 끝이 밑줄·물결로 읽힌 찌꺼기 (예: '........ _36', '........ _ 12')
+    .replace(/(\.{3,})\s*[_~=\-–—]+\s*(\d{1,4})\s*$/, '$1 $2')
     .replace(/\s+/g, ' ')
     .trim();
   // 점선을 글자로 잘못 읽은 짧은 조각(예: 'Ce', 'ee', '--')이 한글 제목과 쪽번호 사이에 남으면 점선으로 바꾼다.

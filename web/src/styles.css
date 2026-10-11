@@ -138,6 +138,14 @@ table input[type='checkbox'] { min-width: 0; width: 16px; }
 .entry.hw { background: #fffbeb; }
 .entry[draggable='true'] { cursor: grab; }
 .entry.dragging { opacity: 0.4; }
+/* 휴대폰 끌어 놓기: 길게 누를 때 글자 선택·메뉴가 뜨지 않게, 끄는 동안 손가락 위에 카드 이름표 */
+.entry[draggable='true'] { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+.touch-ghost {
+  position: fixed; z-index: 1000; pointer-events: none; transform: translate(-50%, -130%);
+  max-width: 70vw; padding: 6px 10px; border-radius: 6px; font-size: 13px;
+  background: var(--primary); color: #fff; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 .board .session .body.drop-over, .unassigned-drop.drop-over { background: var(--primary-soft); outline: 2px dashed var(--primary); outline-offset: -2px; }
 .drop-before { box-shadow: 0 -3px 0 var(--primary); }
 .unassigned-drop { min-height: 40px; border-radius: 6px; padding: 4px; }

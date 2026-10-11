@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import type { Activity, Curriculum, CurriculumSession, LearningObjective, SessionEntry, Textbook, Track } from '@wb/shared';
 import { ACTIVITY_LABEL, ADVANCE_TYPE_LABEL, COMPOSITION_LABEL, TRACK_LABEL, curriculumTotals, fmtMinutes, mergeEntries, moveEntry, rangeLabel, renumber, sessionMinutes, splitEntry } from '@wb/shared';
@@ -96,6 +96,10 @@ export function CurriculumEditorPage() {
   const [mergeWith, setMergeWith] = useState<string | null>(null);
   const [dragId, setDragId] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<string | null>(null);
+  // 휴대폰 끌어 놓기: 끄는 동안 손가락을 따라가는 카드 이름표, 화면을 떠날 때 문서 이벤트 정리
+  const [ghost, setGhost] = useState<{ x: number; y: number; label: string } | null>(null);
+  const touchCleanup = useRef<(() => void) | null>(null);
+  useEffect(() => () => touchCleanup.current?.(), []);
   const [splitTarget, setSplitTarget] = useState<SessionEntry | null>(null);
   const [comment, setComment] = useState('');
   const { data: textbooks } = useAsync(() => get<Textbook[]>('/api/textbooks'), []);
@@ -177,8 +181,8 @@ export function CurriculumEditorPage() {
   const updateEntry = (eid: string, patch: Partial<SessionEntry>) =>
     set({ sessions: doc.sessions.map((s) => ({ ...s, entries: s.entries.map((e) => (e.id === eid ? { ...e, ...patch } : e)) })), unassignedEntries: doc.unassignedEntries.map((e) => (e.id === eid ? { ...e, ...patch } : e)) });
   /** 드래그 앤 드롭: 차시(특정 위치 앞) 또는 미배정(null)으로 이동. 같은 차시 안에서 뒤로 옮길 때는 제거 후 인덱스가 하나 당겨지는 것을 보정한다 */
-  const dropTo = (sessionId: string | null, beforeIndex?: number) => {
-    const id = dragId;
+  const dropTo = (sessionId: string | null, beforeIndex?: number, dragged: string | null = dragId) => {
+    const id = dragged;
     setDragId(null);
     setDropTarget(null);
     if (!id || readOnly) return;
@@ -191,6 +195,84 @@ export function CurriculumEditorPage() {
     }
     setDoc(moveEntry(doc, id, sessionId, idx));
     setSelected(id);
+  };
+  /**
+   * 휴대폰 끌어 놓기 (터치). 브라우저의 끌어 놓기 이벤트는 터치에서 오지 않으므로 직접 처리한다.
+   *  - 카드를 0.35초 길게 누르면 끌기 시작 (그 전에 손가락이 움직이면 평소처럼 화면을 스크롤)
+   *  - 끄는 동안 손가락 아래의 차시·카드 앞·미배정 칸을 표시하고, 화면 위아래 끝에서는 자동으로 스크롤
+   *  - 놓으면 마우스 끌어 놓기와 같은 dropTo 로 옮긴다
+   */
+  const dropAt = (x: number, y: number): string | null => (document.elementFromPoint(x, y)?.closest('[data-drop]') as HTMLElement | null)?.dataset.drop ?? null;
+  const startTouchDrag = (e: SessionEntry, label: string, ev: React.TouchEvent) => {
+    if (readOnly || ev.touches.length !== 1) return;
+    touchCleanup.current?.();
+    const t0 = ev.touches[0];
+    const node = ev.target as HTMLElement;
+    const st = { x: t0.clientX, y: t0.clientY, active: false };
+    const timer = window.setTimeout(() => {
+      st.active = true;
+      setDragId(e.id);
+      setGhost({ x: st.x, y: st.y, label });
+      navigator.vibrate?.(20);
+    }, 350);
+    const cleanup = () => {
+      window.clearTimeout(timer);
+      node.removeEventListener('touchmove', move);
+      node.removeEventListener('touchend', end);
+      node.removeEventListener('touchcancel', cancel);
+      setGhost(null);
+      touchCleanup.current = null;
+    };
+    const move = (te: TouchEvent) => {
+      const p = te.touches[0];
+      if (!st.active) {
+        if (Math.hypot(p.clientX - st.x, p.clientY - st.y) > 10) cleanup();
+        return;
+      }
+      te.preventDefault(); // 끄는 동안 화면이 같이 움직이지 않게
+      st.x = p.clientX;
+      st.y = p.clientY;
+      setGhost((g) => (g ? { ...g, x: p.clientX, y: p.clientY } : g));
+      setDropTarget(dropAt(p.clientX, p.clientY));
+      if (p.clientY < 70) window.scrollBy(0, -14);
+      else if (p.clientY > window.innerHeight - 70) window.scrollBy(0, 14);
+      // 차시 판은 가로로 스크롤된다: 손가락이 판의 왼쪽·오른쪽 끝에 있으면 판을 넘긴다
+      const board = document.querySelector<HTMLElement>('.board');
+      if (board) {
+        const br = board.getBoundingClientRect();
+        if (p.clientY >= br.top && p.clientY <= br.bottom) {
+          if (p.clientX > br.right - 40) board.scrollLeft += 16;
+          else if (p.clientX < br.left + 40) board.scrollLeft -= 16;
+        }
+      }
+    };
+    const end = (te: TouchEvent) => {
+      if (st.active) {
+        te.preventDefault(); // 놓은 뒤 카드 클릭으로 이어지지 않게
+        const target = dropAt(te.changedTouches[0].clientX, te.changedTouches[0].clientY);
+        if (target === 'unassigned') dropTo(null, undefined, e.id);
+        else if (target) {
+          const [sid, before] = target.split(':');
+          dropTo(sid, before === undefined ? undefined : Number(before), e.id);
+        } else {
+          setDragId(null);
+          setDropTarget(null);
+        }
+      }
+      cleanup();
+    };
+    const cancel = () => {
+      if (st.active) {
+        setDragId(null);
+        setDropTarget(null);
+      }
+      cleanup();
+    };
+    // 터치 이벤트는 처음 누른 요소로 계속 온다. 그 요소에 직접 듣는다 (요소가 다시 그려져 문서에서 떨어져도 받도록)
+    node.addEventListener('touchmove', move, { passive: false });
+    node.addEventListener('touchend', end, { passive: false });
+    node.addEventListener('touchcancel', cancel);
+    touchCleanup.current = cancel;
   };
   const moveSel = (delta: number) => {
     if (!sel) return;
@@ -224,7 +306,9 @@ export function CurriculumEditorPage() {
     set({ unassignedEntries: [...doc.unassignedEntries, ...entries] });
   };
 
-  const EntryCard = ({ e, inSession }: { e: SessionEntry; inSession: boolean }) => {
+  // 컴포넌트가 아니라 함수로 그린다: 렌더마다 새 컴포넌트 타입이 되면 카드가 매번 다시 만들어져,
+  // 휴대폰 끌기 도중 처음 누른 카드가 화면에서 떨어져 나간다
+  const entryCard = (e: SessionEntry, inSession: boolean) => {
     const it = itemOf(e);
     const tb = tbMap.get(e.textbookId);
     return (
@@ -233,6 +317,7 @@ export function CurriculumEditorPage() {
         onClick={() => !readOnly && setSelected(e.id)}
         role="button"
         draggable={!readOnly}
+        onTouchStart={(ev) => startTouchDrag(e, it?.title ?? e.itemId, ev)}
         onDragStart={(ev) => {
           ev.dataTransfer.effectAllowed = 'move';
           ev.dataTransfer.setData('text/plain', e.id);
@@ -242,7 +327,7 @@ export function CurriculumEditorPage() {
           setDragId(null);
           setDropTarget(null);
         }}
-        title={readOnly ? '' : '끌어서 다른 차시나 미배정 목록으로 옮길 수 있습니다'}
+        title={readOnly ? '' : '끌어서(휴대폰은 길게 누른 뒤 끌어서) 다른 차시나 미배정 목록으로 옮길 수 있습니다'}
       >
         <div className="title">{it?.title ?? e.itemId}</div>
         <div className="muted">
@@ -592,6 +677,7 @@ export function CurriculumEditorPage() {
                   </div>
                   <div
                     className={`body ${dropTarget === s.id ? 'drop-over' : ''}`}
+                    data-drop={s.id}
                     onDragOver={(ev) => {
                       if (readOnly || !dragId) return;
                       ev.preventDefault();
@@ -618,6 +704,7 @@ export function CurriculumEditorPage() {
                           dropTo(s.id, idx);
                         }}
                         className={dropTarget === `${s.id}:${idx}` ? 'drop-before' : ''}
+                        data-drop={`${s.id}:${idx}`}
                         onClick={() => {
                           if (mergeWith && mergeWith !== e.id) {
                             try {
@@ -630,7 +717,7 @@ export function CurriculumEditorPage() {
                           }
                         }}
                       >
-                        <EntryCard e={e} inSession />
+                        {entryCard(e, true)}
                       </div>
                     ))}
                   </div>
@@ -644,6 +731,7 @@ export function CurriculumEditorPage() {
         </h3>
         <div
           className={`unassigned-drop ${dropTarget === 'unassigned' ? 'drop-over' : ''}`}
+          data-drop="unassigned"
           onDragOver={(ev) => {
             if (readOnly || !dragId) return;
             ev.preventDefault();
@@ -660,11 +748,16 @@ export function CurriculumEditorPage() {
           ) : (
             <div className="grid cols-4">
               {doc.unassignedEntries.map((e) => (
-                <EntryCard key={e.id} e={e} inSession={false} />
+                <div key={e.id}>{entryCard(e, false)}</div>
               ))}
             </div>
           )}
         </div>
+        {ghost && (
+          <div className="touch-ghost" style={{ left: ghost.x, top: ghost.y }} aria-hidden="true">
+            {ghost.label}
+          </div>
+        )}
       </div>
 
       <div className="panel">
