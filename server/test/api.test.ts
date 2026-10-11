@@ -267,6 +267,25 @@ describe('실행 계획', () => {
     expect(s.statusCode).toBe(200);
   });
 
+  it('출력 양식의 열 선택이 엑셀에 적용되고 학생용은 내부 열을 제외한다', async () => {
+    const tpls = (await asAdmin({ method: 'GET', url: '/api/templates' })).json() as Array<{ id: string; audience: string; version: number; columns: string[] }>;
+    const student = tpls.find((t) => t.audience === 'student')!;
+    // 학생용 양식에 내부 열(지도 메모)을 넣어도 저장은 되지만 출력에서는 제외된다
+    const put = await asAdmin({ method: 'PUT', url: `/api/templates/${student.id}`, payload: { ...student, columns: ['date', 'range', 'teachingNote', 'bogus'] } });
+    expect(put.statusCode).toBe(200);
+    expect(put.json().columns).toEqual(['date', 'range', 'teachingNote']); // 정의되지 않은 키 제거
+    const x = await asTeacher({ method: 'GET', url: `/api/plans/${planId}/export.xlsx?template=${student.id}&levels=day` });
+    expect(x.statusCode).toBe(200);
+    expect(decodeURIComponent(String(x.headers['content-disposition']))).toContain('학생용');
+    const ExcelJS = (await import('exceljs')).default;
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(x.rawPayload as never);
+    const day = wb.getWorksheet('일간')!;
+    expect(day.getRow(1).values).toEqual([undefined, '날짜', '범위']);
+    const bad = await asTeacher({ method: 'GET', url: `/api/plans/${planId}/export.xlsx?template=no-such` });
+    expect(bad.statusCode).toBe(400);
+  });
+
   it('학습목표 지도와 오늘 수업', async () => {
     const o = await asTeacher({ method: 'GET', url: `/api/plans/${planId}/objectives` });
     expect(o.statusCode).toBe(200);

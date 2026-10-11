@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import type { AppSettings, HolidaySet, LearningObjective, OutputTemplate } from '@wb/shared';
-import { defaultHolidaySets, isISODate } from '@wb/shared';
+import { DEFAULT_STUDENT_COLUMNS, DEFAULT_TEACHER_COLUMNS, OUTPUT_COLUMNS, defaultHolidaySets, isISODate } from '@wb/shared';
 import type { AppContext } from '../context.ts';
 import { HttpError, arr, bool, expectVersion, genId, newMeta, num, requireAdmin, requireUser, str, touched } from '../context.ts';
 
@@ -11,6 +11,12 @@ export const DEFAULT_SUBJECT_FIELDS: AppSettings['subjectFields'] = [
   { subject: '영어', fields: [{ key: 'text', label: '본문' }, { key: 'vocab', label: '어휘' }, { key: 'grammar', label: '문법' }, { key: 'listening', label: '듣기' }] },
   { subject: '자체', fields: [{ key: 'activity', label: '활동' }, { key: 'materials', label: '준비물' }, { key: 'version', label: '제작 버전' }] },
 ];
+
+const COLUMN_KEYS = new Set<string>(OUTPUT_COLUMNS.map((c) => c.key));
+/** 양식 열 목록에서 정의되지 않은 키를 걸러낸다 */
+function validColumns(cols: string[]): string[] {
+  return cols.filter((c, i) => COLUMN_KEYS.has(c) && cols.indexOf(c) === i);
+}
 
 export function ensureDefaults(ctx: AppContext, by = 'system') {
   const { store } = ctx;
@@ -37,9 +43,8 @@ export function ensureDefaults(ctx: AppContext, by = 'system') {
   if (sets.length === 0) for (const hs of defaultHolidaySets(by, at)) store.insert('holidaySet', hs);
   const templates = store.list<OutputTemplate>('template', { includeArchived: true });
   if (templates.length === 0) {
-    const common = ['date', 'textbook', 'range', 'objective', 'activity', 'minutes'];
-    store.insert<OutputTemplate>('template', { id: 'tpl-teacher', name: '강사용 기본', audience: 'teacher', columns: [...common, 'track', 'materials', 'teachingNote', 'record', 'timeAllocation'], headerNote: '내부용: 지도 메모·시간 배분 포함', footerNote: '', createdAt: at, createdBy: by, updatedAt: at, updatedBy: by, version: 1, archived: false, isSample: false });
-    store.insert<OutputTemplate>('template', { id: 'tpl-student', name: '학생·학부모용 기본', audience: 'student', columns: [...common, 'homework'], headerNote: '학습목표·범위·과제 중심', footerNote: '', createdAt: at, createdBy: by, updatedAt: at, updatedBy: by, version: 1, archived: false, isSample: false });
+    store.insert<OutputTemplate>('template', { id: 'tpl-teacher', name: '강사용 기본', audience: 'teacher', columns: [...DEFAULT_TEACHER_COLUMNS], headerNote: '내부용: 지도 메모·시간 배분 포함', footerNote: '', createdAt: at, createdBy: by, updatedAt: at, updatedBy: by, version: 1, archived: false, isSample: false });
+    store.insert<OutputTemplate>('template', { id: 'tpl-student', name: '학생·학부모용 기본', audience: 'student', columns: [...DEFAULT_STUDENT_COLUMNS], headerNote: '학습목표·범위·과제 중심', footerNote: '', createdAt: at, createdBy: by, updatedAt: at, updatedBy: by, version: 1, archived: false, isSample: false });
   }
 }
 
@@ -122,7 +127,7 @@ export function registerSettingsRoutes(app: FastifyInstance, ctx: AppContext) {
     const existing = store.mustGet<OutputTemplate>('template', id);
     const version = expectVersion(req.body);
     const r = req.body as Record<string, unknown>;
-    const doc: OutputTemplate = touched({ ...existing, name: str(r.name, existing.name), audience: str(r.audience) === 'student' ? 'student' : 'teacher', columns: arr<string>(r.columns), headerNote: str(r.headerNote, existing.headerNote), footerNote: str(r.footerNote, existing.footerNote) }, user, ctx.now());
+    const doc: OutputTemplate = touched({ ...existing, name: str(r.name, existing.name), audience: str(r.audience) === 'student' ? 'student' : 'teacher', columns: validColumns(arr<string>(r.columns)), headerNote: str(r.headerNote, existing.headerNote), footerNote: str(r.footerNote, existing.footerNote) }, user, ctx.now());
     return store.update('template', doc, version);
   });
 
@@ -130,7 +135,7 @@ export function registerSettingsRoutes(app: FastifyInstance, ctx: AppContext) {
     const user = requireAdmin(req);
     const r = (req.body ?? {}) as Record<string, unknown>;
     const at = ctx.now();
-    const doc: OutputTemplate = { id: genId(), name: str(r.name) || '새 양식', audience: str(r.audience) === 'student' ? 'student' : 'teacher', columns: arr<string>(r.columns), headerNote: str(r.headerNote), footerNote: str(r.footerNote), ...newMeta(user, at) };
+    const doc: OutputTemplate = { id: genId(), name: str(r.name) || '새 양식', audience: str(r.audience) === 'student' ? 'student' : 'teacher', columns: validColumns(arr<string>(r.columns)), headerNote: str(r.headerNote), footerNote: str(r.footerNote), ...newMeta(user, at) };
     store.insert('template', doc);
     reply.code(201);
     return doc;

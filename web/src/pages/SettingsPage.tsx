@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { AppSettings, Holiday, HolidaySet, OutputTemplate, User } from '@wb/shared';
+import { OUTPUT_COLUMNS, resolveColumns } from '@wb/shared';
 import { get, post, put, del, errorMessage } from '../api.ts';
 import { useAuth } from '../auth.tsx';
 import { Alert, Badge, Field, Loading, Tabs, useAsync, usePrompt } from '../components/ui.tsx';
@@ -184,10 +185,9 @@ function TemplatesTab({ readOnly }: { readOnly: boolean }) {
   );
 }
 
-const COLUMN_LABEL: Record<string, string> = { date: '날짜', textbook: '교재', range: '범위', objective: '학습목표', activity: '활동', minutes: '시간', track: '트랙', materials: '준비물', teachingNote: '지도 메모', record: '실제 완료', timeAllocation: '시간 배분', homework: '과제' };
-
 function TemplateRow({ t, readOnly, onSaved, onError }: { t: OutputTemplate; readOnly: boolean; onSaved: () => void; onError: (m: string) => void }) {
   const [f, setF] = useState(t);
+  const effective = resolveColumns(f, f.audience).map((c) => c.label).join(', ');
   return (
     <div className="panel tight">
       <div className="grid cols-4">
@@ -208,9 +208,10 @@ function TemplateRow({ t, readOnly, onSaved, onError }: { t: OutputTemplate; rea
         </Field>
       </div>
       <div className="row mt">
-        {Object.entries(COLUMN_LABEL).map(([k, v]) => (
-          <label key={k} className="check">
-            <input type="checkbox" disabled={readOnly} checked={f.columns.includes(k)} onChange={(e) => setF({ ...f, columns: e.target.checked ? [...f.columns, k] : f.columns.filter((c) => c !== k) })} /> {v}
+        {OUTPUT_COLUMNS.map((c) => (
+          <label key={c.key} className="check" title={c.internal ? '내부용 열: 학생·학부모용 양식에서는 출력되지 않습니다' : ''} style={c.internal && f.audience === 'student' ? { opacity: 0.45 } : undefined}>
+            <input type="checkbox" disabled={readOnly} checked={f.columns.includes(c.key)} onChange={(e) => setF({ ...f, columns: e.target.checked ? [...f.columns, c.key] : f.columns.filter((x) => x !== c.key) })} /> {c.label}
+            {c.internal && <span className="muted small">(내부)</span>}
           </label>
         ))}
         {!readOnly && (
@@ -219,6 +220,7 @@ function TemplateRow({ t, readOnly, onSaved, onError }: { t: OutputTemplate; rea
           </button>
         )}
       </div>
+      <div className="muted small mt">실제 출력 열 (선택 순서대로): {effective}</div>
     </div>
   );
 }

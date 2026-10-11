@@ -3,8 +3,8 @@
  * 화면·출력물의 범위·시간·버전이 일치하도록 한다.
  */
 import ExcelJS from 'exceljs';
-import type { Plan } from '@wb/shared';
-import { buildPlanViews, fmtMinutes, type DayView } from '@wb/shared';
+import type { OutputTemplate, Plan } from '@wb/shared';
+import { buildPlanViews, dayRows, fmtMinutes, resolveColumns, type DayView } from '@wb/shared';
 
 export type Audience = 'teacher' | 'student';
 export type Level = 'year' | 'quarter' | 'month' | 'week' | 'day';
@@ -14,6 +14,8 @@ export interface ExportOptions {
   levels: Level[];
   from?: string;
   to?: string;
+  /** 출력 양식 (열 선택). 없으면 대상별 기본 열 */
+  template?: OutputTemplate | null;
 }
 
 export async function buildWorkbook(plan: Plan, opts: ExportOptions): Promise<Buffer> {
@@ -22,6 +24,7 @@ export async function buildWorkbook(plan: Plan, opts: ExportOptions): Promise<Bu
   const wb = new ExcelJS.Workbook();
   wb.creator = 'WB 커리큘럼 플래너';
   const teacher = opts.audience === 'teacher';
+  const columns = resolveColumns(opts.template, opts.audience);
 
   // 표지
   const cover = wb.addWorksheet('표지');
@@ -39,6 +42,7 @@ export async function buildWorkbook(plan: Plan, opts: ExportOptions): Promise<Bu
     ['미배정 범위', h.unassignedCount ? `${h.unassignedCount}건 (${fmtMinutes(h.unassignedMinutes)})` : '없음'],
     ['변경 사항', h.lastChange],
     ['출력 대상', teacher ? '강사용 (지도 메모·시간 배분 포함)' : '학생·학부모용 (학습목표·범위·과제 중심)'],
+    ['출력 양식', opts.template ? `${opts.template.name} (${columns.map((c) => c.label).join(', ')})` : `기본 (${columns.map((c) => c.label).join(', ')})`],
     ['완료율 기준', views.completionBasis],
   ];
   if (teacher) rows.push(['작성자', h.author], ['검토자', h.reviewer]);
@@ -113,46 +117,21 @@ export async function buildWorkbook(plan: Plan, opts: ExportOptions): Promise<Bu
     autoWidth(ws);
   }
 
+  // 주간·일간 시트는 출력 양식의 열 선택을 그대로 쓴다 (인쇄 보기와 같은 정의: shared/output.ts)
   if (opts.levels.includes('week')) {
     const ws = wb.addWorksheet('주간');
-    const head = ['주', '날짜', '교재', '범위', '활동', '트랙', '시간', '과제'];
-    if (teacher) head.push('준비물', '점검 사항', '지도 메모');
-    ws.addRow(head).font = { bold: true };
+    ws.addRow(['주', ...columns.map((c) => c.label)]).font = { bold: true };
     for (const y of views.years) for (const q of y.quarters) for (const m of q.months) for (const w of m.weeks) {
-      for (const d of w.days) {
-        if (d.lesson.status === 'cancelled' || d.lesson.status === 'holiday') {
-          ws.addRow([w.label, d.lesson.date, `(${d.lesson.status === 'holiday' ? '공휴일' : '휴강'}) ${d.lesson.note}`]);
-          continue;
-        }
-        const hw = d.assignments.filter((a) => a.assignment.activity === 'homework').map((a) => `${a.textbookTitle} ${a.rangeText}`).join(', ');
-        for (const a of d.assignments.filter((x) => x.assignment.activity !== 'homework')) {
-          const row = [w.label, d.lesson.date, a.textbookTitle, a.rangeText, a.activityLabel, a.trackLabel, a.assignment.minutes, hw];
-          if (teacher) row.push(a.materials, d.lesson.checklist, a.teachingNote);
-          ws.addRow(row);
-        }
-      }
+      for (const d of w.days) for (const row of dayRows(d, columns)) ws.addRow([w.label, ...row]);
     }
     autoWidth(ws);
   }
 
   if (opts.levels.includes('day')) {
     const ws = wb.addWorksheet('일간');
-    const head = ['날짜', '시간 배분', '학습 목표', '교재', '범위', '활동', '시간', '실제 완료', '남은 범위'];
-    if (teacher) head.push('지도 메모', '비고');
-    ws.addRow(head).font = { bold: true };
+    ws.addRow(columns.map((c) => c.label)).font = { bold: true };
     const days: DayView[] = views.years.flatMap((y) => y.quarters).flatMap((q) => q.months).flatMap((m) => m.weeks).flatMap((w) => w.days);
-    for (const d of days) {
-      const alloc = d.timeAllocation.filter((t) => t.minutes > 0).map((t) => `${t.label} ${t.minutes}분`).join(', ');
-      if (d.assignments.length === 0) {
-        ws.addRow([d.lesson.date, teacher ? alloc : '', '', d.lesson.status === 'scheduled' ? '(배정 없음)' : d.lesson.note]);
-        continue;
-      }
-      for (const a of d.assignments) {
-        const row = [d.lesson.date, teacher ? alloc : '', a.objective, a.textbookTitle, a.rangeText + (teacher && a.pdfRangeText ? ` (${a.pdfRangeText})` : ''), a.activityLabel, a.assignment.minutes, teacher ? a.recordLabel : a.record?.status === 'done' ? '완료' : a.record?.status === 'partial' ? '부분 완료' : '', a.remainingText];
-        if (teacher) row.push(a.teachingNote, a.record?.note ?? '');
-        ws.addRow(row);
-      }
-    }
+    for (const d of days) for (const row of dayRows(d, columns)) ws.addRow(row);
     autoWidth(ws);
   }
 

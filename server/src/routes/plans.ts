@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import type { Curriculum, HolidaySet, ISODate, LearningObjective, Plan, PlanSettings, PlanSnapshot, ProgressRecord, SessionUser, Textbook, UnderstandingCheck } from '@wb/shared';
+import type { Curriculum, HolidaySet, ISODate, LearningObjective, OutputTemplate, Plan, PlanSettings, PlanSnapshot, ProgressRecord, SessionUser, Textbook, UnderstandingCheck } from '@wb/shared';
 import {
   addMakeupDay,
   advancePrerequisiteGaps,
@@ -504,10 +504,14 @@ export function registerPlanRoutes(app: FastifyInstance, ctx: AppContext) {
   app.get('/api/plans/:id/export.xlsx', async (req, reply) => {
     const user = requireUser(req);
     const plan = mustAccess(user, store.mustGet<Plan>('plan', (req.params as { id: string }).id));
-    const q = req.query as { audience?: string; levels?: string; from?: string; to?: string };
+    const q = req.query as { audience?: string; levels?: string; from?: string; to?: string; template?: string };
     const levels = (q.levels ? q.levels.split(',') : ['year', 'quarter', 'month', 'week', 'day']).filter((l): l is Level => ['year', 'quarter', 'month', 'week', 'day'].includes(l));
-    const buf = await buildWorkbook(plan, { audience: q.audience === 'student' ? 'student' : 'teacher', levels, from: q.from, to: q.to });
-    const fname = encodeURIComponent(`${plan.title}_v${plan.planVersion}_${q.audience === 'student' ? '학생용' : '강사용'}.xlsx`);
+    // 출력 양식: 지정되면 양식의 대상(강사/학생)과 열 선택을 따른다
+    const template = q.template ? store.get<OutputTemplate>('template', q.template) : null;
+    if (q.template && !template) throw new HttpError(400, '출력 양식을 찾을 수 없습니다.');
+    const audience: 'teacher' | 'student' = template ? template.audience : q.audience === 'student' ? 'student' : 'teacher';
+    const buf = await buildWorkbook(plan, { audience, levels, from: q.from, to: q.to, template });
+    const fname = encodeURIComponent(`${plan.title}_v${plan.planVersion}_${audience === 'student' ? '학생용' : '강사용'}.xlsx`);
     reply.header('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     reply.header('Content-Disposition', `attachment; filename*=UTF-8''${fname}`);
     return reply.send(buf);

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import type { DayView, HolidaySet, LearningObjective, MonthView, Plan, PlanSettings, PlanViews, QuarterView, TextbookProgress, User, WeekView, YearView } from '@wb/shared';
-import { OBJECTIVE_STATE_LABEL, UNASSIGNED_REASON_LABEL, assignmentViews, fmtMinutes, todayKST, type ObjectiveStatus, type ScheduleDiff } from '@wb/shared';
+import type { DayView, HolidaySet, LearningObjective, MonthView, OutputTemplate, Plan, PlanSettings, PlanViews, QuarterView, TextbookProgress, User, WeekView, YearView } from '@wb/shared';
+import { OBJECTIVE_STATE_LABEL, UNASSIGNED_REASON_LABEL, assignmentViews, fmtMinutes, resolveColumns, todayKST, type ObjectiveStatus, type ScheduleDiff } from '@wb/shared';
 import { get, post, put, errorMessage } from '../api.ts';
 import { useAuth } from '../auth.tsx';
 import { Alert, Badge, Empty, Field, Loading, Modal, SampleBadge, Tabs, useAsync, usePrompt } from '../components/ui.tsx';
@@ -992,17 +992,32 @@ function HistoryTab({ plan, runOp }: { plan: PlanDoc; runOp: (op: string, params
 
 function OutputTab({ plan }: { plan: PlanDoc }) {
   const [audience, setAudience] = useState<'teacher' | 'student'>('teacher');
+  const [templateId, setTemplateId] = useState('');
   const [levels, setLevels] = useState<Level[]>(['year', 'quarter', 'month', 'week', 'day']);
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
-  const q = `audience=${audience}&levels=${levels.join(',')}${from && to ? `&from=${from}&to=${to}` : ''}`;
+  const { data: templates } = useAsync(() => get<OutputTemplate[]>('/api/templates'), []);
+  const template = templates?.find((t) => t.id === templateId);
+  const effectiveAudience = template ? template.audience : audience;
+  const q = `audience=${effectiveAudience}&levels=${levels.join(',')}${from && to ? `&from=${from}&to=${to}` : ''}${templateId ? `&template=${templateId}` : ''}`;
   const toggle = (l: Level) => setLevels(levels.includes(l) ? levels.filter((x) => x !== l) : [...levels, l]);
   return (
     <div className="panel">
       <h2>출력</h2>
       <div className="grid cols-3">
+        <Field label="출력 양식" hint="열 구성은 설정 → 출력 양식에서 바꿉니다. 학생·학부모용 양식은 내부 메모 열을 출력하지 않습니다.">
+          <select value={templateId} onChange={(e) => setTemplateId(e.target.value)}>
+            <option value="">기본 양식 (대상별 기본 열)</option>
+            {(templates ?? []).map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name} ({t.audience === 'teacher' ? '강사용' : '학생·학부모용'})
+              </option>
+            ))}
+          </select>
+          {template && <small className="muted">열: {resolveColumns(template, template.audience).map((c) => c.label).join(', ')}</small>}
+        </Field>
         <Field label="대상">
-          <select value={audience} onChange={(e) => setAudience(e.target.value as typeof audience)}>
+          <select value={effectiveAudience} disabled={!!template} onChange={(e) => setAudience(e.target.value as typeof audience)}>
             <option value="teacher">강사용 (지도 메모·시간 배분 포함)</option>
             <option value="student">학생·학부모용 (학습목표·범위·과제 중심, 내부 메모 제외)</option>
           </select>

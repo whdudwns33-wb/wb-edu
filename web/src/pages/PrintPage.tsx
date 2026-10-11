@@ -1,29 +1,39 @@
 import { useMemo } from 'react';
 import { useParams, useSearchParams } from 'react-router-dom';
-import type { Plan, PlanViews } from '@wb/shared';
-import { fmtMinutes } from '@wb/shared';
+import type { OutputTemplate, Plan, PlanViews } from '@wb/shared';
+import { dayRows, fmtMinutes, resolveColumns } from '@wb/shared';
 import { get } from '../api.ts';
 import { Loading, useAsync } from '../components/ui.tsx';
 
 type Level = 'year' | 'quarter' | 'month' | 'week' | 'day';
 const LEVEL_LABEL: Record<Level, string> = { year: '연간', quarter: '분기', month: '월간', week: '주간', day: '일간' };
 
-/** A4 인쇄 보기. PDF 는 브라우저 인쇄 → 'PDF로 저장' 을 사용한다. 화면·엑셀과 같은 집계(buildPlanViews)를 사용한다. */
+/**
+ * A4 인쇄 보기. PDF 는 브라우저 인쇄 → 'PDF로 저장' 을 사용한다.
+ * 화면·엑셀과 같은 집계(buildPlanViews)와 같은 열 정의(shared/output.ts)를 사용한다.
+ */
 export function PrintPage() {
   const { id } = useParams();
   const [sp, setSp] = useSearchParams();
-  const audience = sp.get('audience') === 'student' ? 'student' : 'teacher';
+  const templateId = sp.get('template') ?? '';
   const levels = (sp.get('levels') ?? 'year,quarter,month,week,day').split(',').filter((l): l is Level => l in LEVEL_LABEL);
   const from = sp.get('from') ?? '';
   const to = sp.get('to') ?? '';
-  const teacher = audience === 'teacher';
   const { data: plan } = useAsync(() => get<Plan>(`/api/plans/${id}`), [id]);
+  const { data: templates } = useAsync(() => get<OutputTemplate[]>('/api/templates'), []);
   const { data } = useAsync(() => get<{ views: PlanViews }>(`/api/plans/${id}/views${from && to ? `?from=${from}&to=${to}` : ''}`), [id, from, to]);
+  const template = templates?.find((t) => t.id === templateId) ?? null;
+  // 양식이 지정되면 양식의 대상을 따르고, 아니면 audience 파라미터
+  const audience: 'teacher' | 'student' = template ? template.audience : sp.get('audience') === 'student' ? 'student' : 'teacher';
+  const teacher = audience === 'teacher';
+  const columns = useMemo(() => resolveColumns(template, audience), [template, audience]);
   const v = data?.views;
   const days = useMemo(() => (v ? v.years.flatMap((y) => y.quarters).flatMap((q) => q.months).flatMap((m) => m.weeks).flatMap((w) => w.days) : []), [v]);
   if (!plan || !v) return <Loading />;
   const h = v.header;
   const clean = (s: string) => s.replace(/^\[가상\]\s*/, '');
+  const setParam = (k: string, val: string) => setSp({ ...Object.fromEntries(sp), [k]: val });
+  const query = `audience=${audience}&levels=${levels.join(',')}${from && to ? `&from=${from}&to=${to}` : ''}${templateId ? `&template=${templateId}` : ''}`;
 
   return (
     <div>
@@ -31,17 +41,27 @@ export function PrintPage() {
         <button className="primary" onClick={() => window.print()}>
           인쇄 / PDF로 저장
         </button>
-        <select value={audience} onChange={(e) => setSp({ ...Object.fromEntries(sp), audience: e.target.value })}>
-          <option value="teacher">강사용</option>
-          <option value="student">학생·학부모용</option>
+        <select value={templateId} onChange={(e) => setParam('template', e.target.value)} title="출력 양식 (설정 → 출력 양식에서 열을 고릅니다)">
+          <option value="">기본 양식</option>
+          {(templates ?? []).map((t) => (
+            <option key={t.id} value={t.id}>
+              {t.name} ({t.audience === 'teacher' ? '강사용' : '학생·학부모용'})
+            </option>
+          ))}
         </select>
+        {!template && (
+          <select value={audience} onChange={(e) => setParam('audience', e.target.value)}>
+            <option value="teacher">강사용</option>
+            <option value="student">학생·학부모용</option>
+          </select>
+        )}
         {(Object.keys(LEVEL_LABEL) as Level[]).map((l) => (
           <label key={l} className="check">
-            <input type="checkbox" checked={levels.includes(l)} onChange={(e) => setSp({ ...Object.fromEntries(sp), levels: (e.target.checked ? [...levels, l] : levels.filter((x) => x !== l)).join(',') })} /> {LEVEL_LABEL[l]}
+            <input type="checkbox" checked={levels.includes(l)} onChange={(e) => setParam('levels', (e.target.checked ? [...levels, l] : levels.filter((x) => x !== l)).join(','))} /> {LEVEL_LABEL[l]}
           </label>
         ))}
-        <input type="date" value={from} onChange={(e) => setSp({ ...Object.fromEntries(sp), from: e.target.value })} /> ~ <input type="date" value={to} onChange={(e) => setSp({ ...Object.fromEntries(sp), to: e.target.value })} />
-        <a className="btn" href={`/api/plans/${id}/export.xlsx?audience=${audience}&levels=${levels.join(',')}${from && to ? `&from=${from}&to=${to}` : ''}`}>
+        <input type="date" value={from} onChange={(e) => setParam('from', e.target.value)} /> ~ <input type="date" value={to} onChange={(e) => setParam('to', e.target.value)} />
+        <a className="btn" href={`/api/plans/${id}/export.xlsx?${query}`}>
           엑셀
         </a>
       </div>
@@ -50,6 +70,7 @@ export function PrintPage() {
           {clean(h.title)} {teacher ? '(강사용)' : '(학생·학부모용)'}
         </h1>
         {plan.isSample && <p><strong>※ 가상 샘플 데이터입니다.</strong></p>}
+        {template?.headerNote && <p>{template.headerNote}</p>}
         <table>
           <tbody>
             <tr>
@@ -86,6 +107,10 @@ export function PrintPage() {
                 <td>{h.lastChange || '-'}</td>
               </tr>
             )}
+            <tr>
+              <th>출력 양식</th>
+              <td colSpan={3}>{template ? template.name : '기본'} · 열: {columns.map((c) => c.label).join(', ')}</td>
+            </tr>
           </tbody>
         </table>
 
@@ -144,7 +169,7 @@ export function PrintPage() {
                     </td>
                     <td>{q.summary.textbooks.map((t) => `${clean(t.title)}: ${t.rangeText}`).join(' / ')}</td>
                     <td>{[...q.summary.reviewDates.map((d) => `복습 ${d}`), ...q.summary.assessmentDates.map((d) => `평가 ${d}`)].join(', ') || `회당 복습 ${plan.settings.reviewMinutes}분`}</td>
-                    <td>{q.transitions.join(', ')}</td>
+                    <td>{q.transitions.map(clean).join(', ')}</td>
                   </tr>
                 ))}
               </tbody>
@@ -204,29 +229,21 @@ export function PrintPage() {
                 <table>
                   <thead>
                     <tr>
-                      <th>날짜</th>
-                      <th>교재 범위</th>
-                      <th>활동</th>
-                      <th>과제</th>
-                      <th>준비물</th>
-                      {teacher && <th>점검 사항</th>}
+                      {columns.map((c) => (
+                        <th key={c.key}>{c.label}</th>
+                      ))}
                     </tr>
                   </thead>
                   <tbody>
-                    {w.days.map((d) => (
-                      <tr key={d.lesson.id}>
-                        <td>{d.lesson.date.slice(5)}</td>
-                        <td>
-                          {d.lesson.status === 'cancelled' || d.lesson.status === 'holiday'
-                            ? `(${d.lesson.status === 'holiday' ? '공휴일' : '휴강'}) ${d.lesson.note}`
-                            : d.assignments.filter((a) => a.assignment.activity !== 'homework').map((a) => `${clean(a.textbookTitle)} ${a.rangeText} (${a.assignment.minutes}분)`).join('; ')}
-                        </td>
-                        <td>{[...new Set(d.assignments.filter((a) => a.assignment.activity !== 'homework').map((a) => a.activityLabel))].join(', ')}</td>
-                        <td>{d.assignments.filter((a) => a.assignment.activity === 'homework').map((a) => `${clean(a.textbookTitle)} ${a.rangeText}`).join(', ')}</td>
-                        <td>{[...new Set(d.assignments.map((a) => a.materials).filter(Boolean))].join(', ')}</td>
-                        {teacher && <td>{d.lesson.checklist}</td>}
-                      </tr>
-                    ))}
+                    {w.days.flatMap((d) =>
+                      dayRows(d, columns).map((row, i) => (
+                        <tr key={`${d.lesson.id}-${i}`}>
+                          {row.map((cell, j) => (
+                            <td key={j}>{columns[j].key === 'textbook' ? clean(cell) : cell}</td>
+                          ))}
+                        </tr>
+                      )),
+                    )}
                   </tbody>
                 </table>
               </div>
@@ -240,31 +257,21 @@ export function PrintPage() {
             {days.filter((d) => d.lesson.status === 'scheduled' || d.lesson.status === 'makeup').map((d) => (
               <div key={d.lesson.id} style={{ marginBottom: 10 }}>
                 <h3>{d.dateLabel}</h3>
-                {teacher && <p>시간 배분: {d.timeAllocation.filter((t) => t.minutes > 0).map((t) => `${t.label} ${t.minutes}분`).join(' · ')}</p>}
                 {d.objectives.length > 0 && <p>학습 목표: {d.objectives.join(' / ')}</p>}
                 <table>
                   <thead>
                     <tr>
-                      <th>교재 범위</th>
-                      <th>활동</th>
-                      <th>시간</th>
-                      <th>실제 완료</th>
-                      <th>남은 범위</th>
-                      {teacher && <th>지도 메모</th>}
+                      {columns.filter((c) => c.key !== 'date').map((c) => (
+                        <th key={c.key}>{c.label}</th>
+                      ))}
                     </tr>
                   </thead>
                   <tbody>
-                    {d.assignments.map((a) => (
-                      <tr key={a.assignment.id}>
-                        <td>
-                          {clean(a.textbookTitle)} {a.rangeText}
-                          {teacher && a.pdfRangeText ? ` (${a.pdfRangeText})` : ''} — {a.itemTitle}
-                        </td>
-                        <td>{a.activityLabel}</td>
-                        <td>{a.assignment.minutes}분</td>
-                        <td>{teacher ? a.recordLabel : a.record?.status === 'done' ? '완료' : a.record?.status === 'partial' ? '부분 완료' : ''}</td>
-                        <td>{a.remainingText}</td>
-                        {teacher && <td>{a.teachingNote}</td>}
+                    {dayRows(d, columns.filter((c) => c.key !== 'date')).map((row, i) => (
+                      <tr key={i}>
+                        {row.map((cell, j) => (
+                          <td key={j}>{columns.filter((c) => c.key !== 'date')[j].key === 'textbook' ? clean(cell) : cell}</td>
+                        ))}
                       </tr>
                     ))}
                   </tbody>
@@ -273,6 +280,7 @@ export function PrintPage() {
             ))}
           </section>
         )}
+        {template?.footerNote && <p>{template.footerNote}</p>}
         <p style={{ marginTop: 16, fontSize: '9pt' }}>{v.completionBasis}</p>
       </div>
     </div>

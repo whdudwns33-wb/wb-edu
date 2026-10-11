@@ -9,3 +9,4 @@ export * from './objectives.ts';
 export * from './importer.ts';
 export * from './assembler.ts';
 export * from './sample.ts';
+export * from './output.ts';
