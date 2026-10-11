@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import type { Curriculum, CurriculumSession, CurriculumTextbookRef, SessionEntry, Textbook } from '@wb/shared';
 import { autoAssemble, cloneCurriculum, curriculumTotals, renumber } from '@wb/shared';
 import type { AppContext } from '../context.ts';
-import { HttpError, arr, bool, expectVersion, genId, newMeta, num, requireAdmin, requireUser, str, touched } from '../context.ts';
+import { HttpError, TEXT_LIMIT, arr, bool, expectVersion, genId, newMeta, num, requireAdmin, requireUser, str, touched } from '../context.ts';
 
 const TRACKS = ['current', 'review', 'advance'];
 const ACTIVITIES = ['new', 'practice', 'review', 'assessment', 'homework'];
@@ -167,8 +167,10 @@ export function registerCurriculumRoutes(app: FastifyInstance, ctx: AppContext) 
     const user = requireAdmin(req);
     const id = (req.params as { id: string }).id;
     const existing = store.mustGet<Curriculum>('curriculum', id);
+    // 발행은 '내가 검토한 내용'을 검증됨으로 표시하는 것이므로, 화면에서 본 버전이 지금 버전과 같아야 한다
+    const version = expectVersion(req.body);
     const doc = touched({ ...existing, curriculumVersion: existing.curriculumVersion + 1, status: 'verified' as const }, user, ctx.now());
-    const saved = store.update('curriculum', doc, existing.version);
+    const saved = store.update('curriculum', doc, version);
     store.audit({ at: doc.updatedAt, userId: user.id, kind: 'curriculum', docId: id, action: 'publish', detail: `v${doc.curriculumVersion}` });
     return saved;
   });
@@ -179,7 +181,9 @@ export function registerCurriculumRoutes(app: FastifyInstance, ctx: AppContext) 
     const existing = store.mustGet<Curriculum>('curriculum', id);
     const archived = bool((req.body as Record<string, unknown>)?.archived, true);
     const doc = touched({ ...existing, archived }, user, ctx.now());
-    return store.update('curriculum', doc, existing.version);
+    const saved = store.update('curriculum', doc, existing.version);
+    store.audit({ at: doc.updatedAt, userId: user.id, kind: 'curriculum', docId: id, action: archived ? 'archive' : 'restore', detail: doc.title });
+    return saved;
   });
 
   app.post('/api/curricula/:id/clone', async (req, reply) => {
@@ -201,6 +205,9 @@ export function registerCurriculumRoutes(app: FastifyInstance, ctx: AppContext) 
     const existing = store.mustGet<Curriculum>('curriculum', id);
     const text = str((req.body as Record<string, unknown>)?.text).trim();
     if (!text) throw new HttpError(400, '의견 내용을 입력하세요.');
+    // 의견은 모든 사람이 불러오는 과정 문서에 붙으므로 길이와 개수를 제한한다
+    if (text.length > TEXT_LIMIT.comment) throw new HttpError(400, `의견은 ${TEXT_LIMIT.comment}자 이하로 입력하세요.`);
+    if (existing.reviewComments.length >= 300) throw new HttpError(400, '이 과정의 의견이 너무 많습니다(300건). 과정을 복제해 새로 검토하세요.');
     const at = ctx.now();
     const doc = touched({ ...existing, reviewComments: [...existing.reviewComments, { id: genId(), at, by: user.displayName, text }] }, user, at);
     return store.update('curriculum', doc, existing.version);

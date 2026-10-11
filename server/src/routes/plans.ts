@@ -11,6 +11,7 @@ import {
   confirmBlockers,
   continueAssignment,
   dayView,
+  diffDays,
   diffSchedule,
   excludeUnassigned,
   extraLabelMap,
@@ -35,7 +36,10 @@ import {
   type ScheduleContext,
 } from '@wb/shared';
 import type { AppContext } from '../context.ts';
-import { HttpError, arr, bool, expectVersion, genId, newMeta, num, requireAdmin, requireUser, str, touched } from '../context.ts';
+import { HttpError, TEXT_LIMIT, arr, bool, expectVersion, genId, newMeta, num, requireAdmin, requireUser, safeFileName, str, text, touched } from '../context.ts';
+
+/** 계획 기간 상한 (약 3년). 기간 우선·목표일·보강일 모두에 적용 */
+const MAX_PLAN_DAYS = 1100;
 import { buildWorkbook, type Level } from '../export.ts';
 
 // ──────────────────────────────────────────────
@@ -97,6 +101,10 @@ export function normalizeSettings(raw: unknown, defaults?: PlanSettings): PlanSe
   const targetDate = str(r.targetDate, defaults?.targetDate ?? '');
   if (targetDate && !isISODate(targetDate)) throw new HttpError(400, '목표 완료일 형식이 올바르지 않습니다.');
   if (endDate && endDate < startDate) throw new HttpError(400, '종료일은 시작일보다 뒤여야 합니다.');
+  // 기간 상한: 아주 긴 기간(예: 1000~2999년)은 수업이 수십만 회가 되어 서버가 멈추고 문서가 수백 MB가 된다
+  for (const [label, d] of [['종료일', endDate], ['목표 완료일', targetDate]] as const) {
+    if (d && diffDays(startDate, d) > MAX_PLAN_DAYS) throw new HttpError(400, `${label}은 시작일로부터 ${MAX_PLAN_DAYS}일(약 3년) 안이어야 합니다.`);
+  }
   const weekdays = arr<number>(r.weekdays ?? defaults?.weekdays).filter((d) => Number.isInteger(d) && d >= 0 && d <= 6);
   const makeup = arr<Record<string, unknown>>(r.makeupDays ?? defaults?.makeupDays);
   if (weekdays.length === 0 && makeup.length === 0) throw new HttpError(400, '수업 요일을 1개 이상 선택하세요.');
@@ -105,7 +113,8 @@ export function normalizeSettings(raw: unknown, defaults?: PlanSettings): PlanSe
   const minutesPerLesson = num(r.minutesPerLesson, defaults?.minutesPerLesson ?? 60);
   const reviewMinutes = num(r.reviewMinutes, defaults?.reviewMinutes ?? 0);
   const bufferMinutes = num(r.bufferMinutes, defaults?.bufferMinutes ?? 0);
-  if (minutesPerLesson <= 0) throw new HttpError(400, '회당 수업시간은 1분 이상이어야 합니다.');
+  if (minutesPerLesson <= 0 || minutesPerLesson > 600) throw new HttpError(400, '회당 수업시간은 1~600분이어야 합니다.');
+  if (reviewMinutes < 0 || bufferMinutes < 0) throw new HttpError(400, '복습·여유 시간은 0분 이상이어야 합니다.');
   if (reviewMinutes + bufferMinutes >= minutesPerLesson) throw new HttpError(400, '복습·여유 시간 합이 회당 수업시간 이상입니다. 새 진도 시간이 없습니다.');
   const month = num(r.academicYearStartMonth, defaults?.academicYearStartMonth ?? 3);
   const tr = (r.tracks ?? defaults?.tracks ?? {}) as Record<string, unknown>;
@@ -115,12 +124,24 @@ export function normalizeSettings(raw: unknown, defaults?: PlanSettings): PlanSe
     advanceWeekdays: Array.isArray(tr.advanceWeekdays) ? (tr.advanceWeekdays as number[]).filter((d) => Number.isInteger(d)) : null,
     currentMinMinutes: Math.max(0, num(tr.currentMinMinutes, 0)),
   };
-  const dateList = (key: string, list: unknown) =>
-    arr<Record<string, unknown>>(list).map((x): Record<string, unknown> => {
+  const dateList = (key: string, list: unknown) => {
+    const items = arr<unknown>(list);
+    if (items.length > 1000) throw new HttpError(400, `${key}은(는) 1000개까지 넣을 수 있습니다.`);
+    return items.map((raw): Record<string, unknown> => {
+      if (!raw || typeof raw !== 'object') throw new HttpError(400, `${key} 항목 형식이 올바르지 않습니다.`);
+      const x = raw as Record<string, unknown>;
       const date = str(x.date);
-      if (!isISODate(date)) throw new HttpError(400, `${key} 날짜 형식 오류: ${date}`);
+      if (!isISODate(date)) throw new HttpError(400, `${key} 날짜 형식 오류: ${String(date).slice(0, 20)}`);
+      if (Math.abs(diffDays(startDate, date)) > MAX_PLAN_DAYS) throw new HttpError(400, `${key} 날짜 ${date}가 계획 기간에서 너무 멉니다.`);
       return { ...x, date };
     });
+  };
+  // 보강·고정 일정의 분: 음수나 아주 큰 값은 수업 가능 시간 계산을 망가뜨린다
+  const eventMinutes = (key: string, v: unknown, allowZero: boolean): number | undefined => {
+    if (v === undefined || v === null || v === '') return undefined;
+    if (typeof v !== 'number' || !Number.isFinite(v) || v < (allowZero ? 0 : 1) || v > 600) throw new HttpError(400, `${key} 시간은 ${allowZero ? 0 : 1}~600분이어야 합니다.`);
+    return Math.round(v);
+  };
   return {
     startDate,
     endDate,
@@ -132,10 +153,10 @@ export function normalizeSettings(raw: unknown, defaults?: PlanSettings): PlanSe
     mode,
     academicYearStartMonth: month >= 1 && month <= 12 ? month : 3,
     tracks,
-    holidaySetIds: arr<string>(r.holidaySetIds ?? defaults?.holidaySetIds),
-    offDays: dateList('휴강', r.offDays ?? defaults?.offDays).map((x) => ({ id: str(x.id) || genId(), date: str(x.date), reason: str(x.reason) || '휴강', source: str(x.source) === 'holiday' ? 'holiday' : 'manual' })),
-    makeupDays: dateList('보강', r.makeupDays ?? defaults?.makeupDays).map((x) => ({ id: str(x.id) || genId(), date: str(x.date), minutes: typeof x.minutes === 'number' ? x.minutes : undefined, note: str(x.note) })),
-    fixedEvents: dateList('고정 일정', r.fixedEvents ?? defaults?.fixedEvents).map((x) => ({ id: str(x.id) || genId(), date: str(x.date), title: str(x.title) || '고정 일정', minutes: Math.max(0, num(x.minutes, 0)) })),
+    holidaySetIds: arr<unknown>(r.holidaySetIds ?? defaults?.holidaySetIds).filter((x): x is string => typeof x === 'string').slice(0, 20),
+    offDays: dateList('휴강', r.offDays ?? defaults?.offDays).map((x) => ({ id: str(x.id).slice(0, 64) || genId(), date: str(x.date), reason: text(x.reason, TEXT_LIMIT.title, '휴강 사유') || '휴강', source: str(x.source) === 'holiday' ? 'holiday' : 'manual' })),
+    makeupDays: dateList('보강', r.makeupDays ?? defaults?.makeupDays).map((x) => ({ id: str(x.id).slice(0, 64) || genId(), date: str(x.date), minutes: eventMinutes('보강', x.minutes, false), note: text(x.note, TEXT_LIMIT.title, '보강 메모') })),
+    fixedEvents: dateList('고정 일정', r.fixedEvents ?? defaults?.fixedEvents).map((x) => ({ id: str(x.id).slice(0, 64) || genId(), date: str(x.date), title: text(x.title, TEXT_LIMIT.title, '고정 일정 이름') || '고정 일정', minutes: eventMinutes('고정 일정', x.minutes, true) ?? 0 })),
     maxDays: Math.min(1500, Math.max(30, num(r.maxDays, defaults?.maxDays ?? 400))),
   };
 }
@@ -211,10 +232,10 @@ export function registerPlanRoutes(app: FastifyInstance, ctx: AppContext) {
     const res = generateSchedule(settings, { snapshot, holidayDates: holidayDatesFor(store, settings) });
     const plan: Plan = {
       id: genId(),
-      title: str(r.title) || `${curriculum.title} 계획`,
+      title: text(r.title, TEXT_LIMIT.title, '계획 이름') || `${curriculum.title} 계획`,
       subject: curriculum.subject,
-      target: str(r.target, curriculum.target),
-      classOrStudentRef: str(r.classOrStudentRef),
+      target: r.target === undefined ? curriculum.target : text(r.target, TEXT_LIMIT.title, '대상'),
+      classOrStudentRef: text(r.classOrStudentRef, TEXT_LIMIT.title, '반·학생 표시'),
       curriculumId: curriculum.id,
       snapshot,
       settings,
@@ -227,10 +248,10 @@ export function registerPlanRoutes(app: FastifyInstance, ctx: AppContext) {
       planVersion: 1,
       endDateComputed: res.endDateComputed,
       history: [{ id: genId(), at, by: user.id, action: 'generate', description: `자동 편성 (${settings.mode === 'period' ? '기간 우선' : '속도 우선'})${res.warnings.length ? ' · ' + res.warnings.join(' ') : ''}` }],
-      author: str(r.author, user.displayName),
-      reviewer: str(r.reviewer),
-      requiredObjectiveIds: arr<string>(r.requiredObjectiveIds),
-      allowedUserIds: arr<string>(r.allowedUserIds),
+      author: r.author === undefined ? user.displayName : text(r.author, TEXT_LIMIT.title, '작성자'),
+      reviewer: text(r.reviewer, TEXT_LIMIT.title, '검토자'),
+      requiredObjectiveIds: arr<unknown>(r.requiredObjectiveIds).filter((x): x is string => typeof x === 'string').slice(0, 500),
+      allowedUserIds: arr<unknown>(r.allowedUserIds).filter((x): x is string => typeof x === 'string').slice(0, 200),
       ...newMeta(user, at, bool(r.isSample, curriculum.isSample)),
     };
     store.insert('plan', plan);
@@ -266,25 +287,33 @@ export function registerPlanRoutes(app: FastifyInstance, ctx: AppContext) {
     const doc: Plan = touched(
       {
         ...existing,
-        title: str(r.title, existing.title),
-        target: str(r.target, existing.target),
-        classOrStudentRef: str(r.classOrStudentRef, existing.classOrStudentRef),
-        author: str(r.author, existing.author),
-        reviewer: str(r.reviewer, existing.reviewer),
-        requiredObjectiveIds: Array.isArray(r.requiredObjectiveIds) ? arr<string>(r.requiredObjectiveIds) : existing.requiredObjectiveIds,
-        allowedUserIds: user.role === 'admin' && Array.isArray(r.allowedUserIds) ? arr<string>(r.allowedUserIds) : existing.allowedUserIds,
+        title: r.title === undefined ? existing.title : text(r.title, TEXT_LIMIT.title, '계획 이름') || existing.title,
+        target: r.target === undefined ? existing.target : text(r.target, TEXT_LIMIT.title, '대상'),
+        classOrStudentRef: r.classOrStudentRef === undefined ? existing.classOrStudentRef : text(r.classOrStudentRef, TEXT_LIMIT.title, '반·학생 표시'),
+        author: r.author === undefined ? existing.author : text(r.author, TEXT_LIMIT.title, '작성자'),
+        reviewer: r.reviewer === undefined ? existing.reviewer : text(r.reviewer, TEXT_LIMIT.title, '검토자'),
+        requiredObjectiveIds: Array.isArray(r.requiredObjectiveIds) ? arr<unknown>(r.requiredObjectiveIds).filter((x): x is string => typeof x === 'string').slice(0, 500) : existing.requiredObjectiveIds,
+        allowedUserIds: user.role === 'admin' && Array.isArray(r.allowedUserIds) ? arr<unknown>(r.allowedUserIds).filter((x): x is string => typeof x === 'string').slice(0, 200) : existing.allowedUserIds,
         archived: bool(r.archived, existing.archived),
         lessons: Array.isArray(r.lessonNotes)
           ? existing.lessons.map((l) => {
-              const n = arr<Record<string, unknown>>(r.lessonNotes).find((x) => str(x.lessonId) === l.id);
-              return n ? { ...l, note: str(n.note, l.note), checklist: str(n.checklist, l.checklist) } : l;
+              const n = arr<unknown>(r.lessonNotes).find((x): x is Record<string, unknown> => !!x && typeof x === 'object' && str((x as Record<string, unknown>).lessonId) === l.id);
+              return n ? { ...l, note: n.note === undefined ? l.note : text(n.note, TEXT_LIMIT.note, '수업 메모'), checklist: n.checklist === undefined ? l.checklist : text(n.checklist, TEXT_LIMIT.note, '확인 사항') } : l;
             })
           : existing.lessons,
       },
       user,
       ctx.now(),
     );
-    return planResponse(store.update('plan', doc, version));
+    const saved = store.update('plan', doc, version);
+    // 보관·이름·허용 강사 변경은 감사 로그에 남긴다
+    const changes = [
+      doc.archived !== existing.archived ? (doc.archived ? '보관' : '보관 해제') : '',
+      doc.title !== existing.title ? `이름: ${existing.title} → ${doc.title}` : '',
+      doc.allowedUserIds.join(',') !== existing.allowedUserIds.join(',') ? `허용 강사 ${existing.allowedUserIds.length}명 → ${doc.allowedUserIds.length}명` : '',
+    ].filter(Boolean);
+    if (changes.length) store.audit({ at: saved.updatedAt, userId: user.id, kind: 'plan', docId: saved.id, action: 'update', detail: changes.join(', ').slice(0, 500) });
+    return planResponse(saved);
   });
 
   /** 스냅샷을 현재 과정·교재로 갱신 (초안만) */
@@ -384,7 +413,10 @@ export function registerPlanRoutes(app: FastifyInstance, ctx: AppContext) {
       }
     } catch (e) {
       if (e instanceof HttpError) throw e;
-      throw new HttpError(400, (e as Error).message);
+      // 편성 규칙이 거절한 경우(한글 안내문을 가진 일반 Error)만 400 으로 알려 준다.
+      // 그 밖의 예외(TypeError, DB 오류 등)는 내부 사정을 노출하지 않도록 500 처리로 넘긴다.
+      if (e instanceof Error && e.constructor === Error && /[가-힣]/.test(e.message)) throw new HttpError(400, e.message);
+      throw e;
     }
     if (dryRun) {
       return { diff: result.diff, warnings: result.warnings, description: result.description, preview: { lessons: result.plan.lessons, assignments: result.plan.assignments, unassigned: result.plan.unassigned } };
@@ -423,6 +455,14 @@ export function registerPlanRoutes(app: FastifyInstance, ctx: AppContext) {
       if (!same) throw new HttpError(409, '다른 사용자가 그사이 이 배정의 날짜나 범위를 바꿨습니다. 새로 고쳐 바뀐 내용을 확인한 뒤 다시 기록하세요.');
     }
     const cp = r.completedPortion as { from?: unknown; to?: unknown } | undefined;
+    if (status === 'partial' && cp && (cp.from !== undefined || cp.to !== undefined)) {
+      // 완료 범위는 이 배정이 다루는 범위 안의 정수 구간이어야 한다 (뒤집힌 범위·바깥 범위는 '이어서 진행'을 망가뜨린다)
+      const item = existing.snapshot.textbooks.find((t) => t.id === a.textbookId)?.items.find((i) => i.id === a.itemId);
+      const span = a.portion ?? item?.range;
+      const ok =
+        Number.isInteger(cp.from) && Number.isInteger(cp.to) && (cp.from as number) <= (cp.to as number) && (!span || ((cp.from as number) >= span.from && (cp.to as number) <= span.to));
+      if (!ok) throw new HttpError(400, span ? `완료 범위는 ${span.from}~${span.to} 안에서 시작 ≤ 끝인 정수로 입력하세요.` : '완료 범위는 시작 ≤ 끝인 정수로 입력하세요.');
+    }
     const at = ctx.now();
     const rec: ProgressRecord = {
       id: genId(),
@@ -433,8 +473,8 @@ export function registerPlanRoutes(app: FastifyInstance, ctx: AppContext) {
       completedPortion: status === 'partial' && cp && typeof cp.from === 'number' && typeof cp.to === 'number' ? { from: cp.from, to: cp.to } : undefined,
       completedFraction: status === 'partial' && typeof r.completedFraction === 'number' ? Math.min(1, Math.max(0, r.completedFraction)) : undefined,
       actualMinutes: typeof r.actualMinutes === 'number' && r.actualMinutes > 0 && r.actualMinutes <= 600 ? Math.round(r.actualMinutes) : undefined,
-      reason: str(r.reason),
-      note: str(r.note),
+      reason: text(r.reason, TEXT_LIMIT.title, '사유'),
+      note: text(r.note, TEXT_LIMIT.note, '메모'),
       recordedAt: at,
       recordedBy: user.id,
     };
@@ -466,7 +506,7 @@ export function registerPlanRoutes(app: FastifyInstance, ctx: AppContext) {
     const allowedObjectives = new Set(item?.objectiveIds ?? []);
     const objectiveIds = arr<string>(r.objectiveIds).filter((o) => typeof o === 'string' && allowedObjectives.has(o));
     const at = ctx.now();
-    const chk: UnderstandingCheck = { id: genId(), lessonId: lesson.id, itemId, textbookId: asg.textbookId, objectiveIds, result: result as UnderstandingCheck['result'], note: str(r.note), checkedAt: at, checkedBy: user.id };
+    const chk: UnderstandingCheck = { id: genId(), lessonId: lesson.id, itemId, textbookId: asg.textbookId, objectiveIds, result: result as UnderstandingCheck['result'], note: text(r.note, TEXT_LIMIT.note, '메모'), checkedAt: at, checkedBy: user.id };
     const doc: Plan = touched({ ...existing, understandingChecks: [...existing.understandingChecks, chk] }, user, at);
     const savedChk = store.update('plan', doc, existing.version);
     if (bool(r.slim, false)) return { id: savedChk.id, version: savedChk.version, planVersion: savedChk.planVersion, checkId: chk.id, merged };
@@ -492,7 +532,9 @@ export function registerPlanRoutes(app: FastifyInstance, ctx: AppContext) {
     const version = expectVersion(req.body);
     const at = ctx.now();
     const doc: Plan = touched({ ...existing, status: 'draft', history: [...existing.history, { id: genId(), at, by: user.id, action: 'manual_edit', description: '확정 해제' }] }, user, at);
-    return planResponse(store.update('plan', doc, version));
+    const saved = store.update('plan', doc, version);
+    store.audit({ at, userId: user.id, kind: 'plan', docId: saved.id, action: 'unconfirm', detail: saved.title });
+    return planResponse(saved);
   });
 
   /** 복제: 학생정보·완료 기록·이해 확인·이력은 복제하지 않는다 */
@@ -565,7 +607,7 @@ export function registerPlanRoutes(app: FastifyInstance, ctx: AppContext) {
     const audience: 'teacher' | 'student' = template ? template.audience : q.audience === 'student' ? 'student' : 'teacher';
     const appSettings = store.get<AppSettings>('settings', 'app');
     const buf = await buildWorkbook(plan, { audience, levels, from: q.from, to: q.to, template, extraLabels: extraLabelMap(appSettings?.subjectFields) });
-    const fname = encodeURIComponent(`${plan.title}_v${plan.planVersion}_${audience === 'student' ? '학생용' : '강사용'}.xlsx`);
+    const fname = encodeURIComponent(safeFileName(`${plan.title}_v${plan.planVersion}_${audience === "student" ? "학생용" : "강사용"}.xlsx`));
     reply.header('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     reply.header('Content-Disposition', `attachment; filename*=UTF-8''${fname}`);
     return reply.send(buf);
@@ -643,7 +685,7 @@ export function registerPlanRoutes(app: FastifyInstance, ctx: AppContext) {
     const plan = mustAccess(user, store.mustGet<Plan>('plan', (req.params as { id: string }).id));
     const q = req.query as { audience?: string; cancelled?: string };
     const body = planToIcal(plan, { audience: q.audience === 'student' ? 'student' : 'teacher', includeCancelled: q.cancelled === '1' });
-    const fname = encodeURIComponent(`${plan.title}_v${plan.planVersion}.ics`);
+    const fname = encodeURIComponent(safeFileName(`${plan.title}_v${plan.planVersion}.ics`));
     reply.header('Content-Type', 'text/calendar; charset=utf-8');
     reply.header('Content-Disposition', `attachment; filename*=UTF-8''${fname}`);
     return reply.send(body);

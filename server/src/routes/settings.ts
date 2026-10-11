@@ -1,8 +1,8 @@
 import type { FastifyInstance } from 'fastify';
-import type { AppSettings, HolidaySet, LearningObjective, OutputTemplate } from '@wb/shared';
+import type { AppSettings, AuditMeta, Curriculum, HolidaySet, LearningObjective, OutputTemplate, Plan, Textbook } from '@wb/shared';
 import { DEFAULT_STUDENT_COLUMNS, DEFAULT_TEACHER_COLUMNS, OUTPUT_COLUMNS, cleanSummaryColumns, defaultHolidaySets, isISODate } from '@wb/shared';
 import type { AppContext } from '../context.ts';
-import { HttpError, arr, bool, expectVersion, genId, newMeta, num, requireAdmin, requireUser, str, touched } from '../context.ts';
+import { HttpError, TEXT_LIMIT, arr, bool, expectVersion, genId, newMeta, num, requireAdmin, requireUser, str, text, touched } from '../context.ts';
 
 export const DEFAULT_SUBJECT_FIELDS: AppSettings['subjectFields'] = [
   { subject: '독해', fields: [{ key: 'passage', label: '지문' }, { key: 'skill', label: '독해 기능' }] },
@@ -50,6 +50,8 @@ export function ensureDefaults(ctx: AppContext, by = 'system') {
 
 export function registerSettingsRoutes(app: FastifyInstance, ctx: AppContext) {
   const { store } = ctx;
+  /** 관리자 설정 변경은 모두 감사 로그에 남긴다 */
+  const log = (userId: string, kind: string, docId: string, action: string, detail: string) => store.audit({ at: ctx.now(), userId, kind, docId, action, detail: detail.slice(0, 500) });
 
   // ── 운영 설정 ──
   app.get('/api/settings', async (req) => {
@@ -64,14 +66,19 @@ export function registerSettingsRoutes(app: FastifyInstance, ctx: AppContext) {
     const r = req.body as Record<string, unknown>;
     const month = num(r.academicYearStartMonth, existing.academicYearStartMonth);
     if (month < 1 || month > 12) throw new HttpError(400, '학년도 시작월은 1~12 사이여야 합니다.');
+    const minutesIn = (v: unknown, cur: number, min: number, label: string) => {
+      const n = num(v, cur);
+      if (n < min || n > 600) throw new HttpError(400, `${label}은(는) ${min}~600분이어야 합니다.`);
+      return n;
+    };
     const doc: AppSettings = touched(
       {
         ...existing,
         academicYearStartMonth: month,
-        defaultMinutesPerLesson: num(r.defaultMinutesPerLesson, existing.defaultMinutesPerLesson),
-        defaultReviewMinutes: num(r.defaultReviewMinutes, existing.defaultReviewMinutes),
-        defaultBufferMinutes: num(r.defaultBufferMinutes, existing.defaultBufferMinutes),
-        organizationName: str(r.organizationName, existing.organizationName),
+        defaultMinutesPerLesson: minutesIn(r.defaultMinutesPerLesson, existing.defaultMinutesPerLesson, 1, '기본 수업시간'),
+        defaultReviewMinutes: minutesIn(r.defaultReviewMinutes, existing.defaultReviewMinutes, 0, '기본 복습 시간'),
+        defaultBufferMinutes: minutesIn(r.defaultBufferMinutes, existing.defaultBufferMinutes, 0, '기본 여유 시간'),
+        organizationName: r.organizationName === undefined ? existing.organizationName : text(r.organizationName, TEXT_LIMIT.title, '기관 이름'),
         subjectFields: Array.isArray(r.subjectFields)
           ? arr<Record<string, unknown>>(r.subjectFields).map((s) => ({ subject: str(s.subject), fields: arr<Record<string, unknown>>(s.fields).map((f) => ({ key: str(f.key), label: str(f.label) })).filter((f) => f.key) }))
           : existing.subjectFields,
@@ -79,7 +86,9 @@ export function registerSettingsRoutes(app: FastifyInstance, ctx: AppContext) {
       user,
       ctx.now(),
     );
-    return store.update('settings', doc, version);
+    const saved = store.update('settings', doc, version);
+    log(user.id, 'settings', 'app', 'update', '운영 설정 저장');
+    return saved;
   });
 
   // ── 공휴일 ──
@@ -100,7 +109,9 @@ export function registerSettingsRoutes(app: FastifyInstance, ctx: AppContext) {
       return { id: str(h.id) || genId(), date, name: str(h.name), year: num(h.year, Number(date.slice(0, 4))), source: str(h.source, existing.source), verified: bool(h.verified, false), enabled: bool(h.enabled, true) };
     });
     const doc: HolidaySet = touched({ ...existing, name: str(r.name, existing.name), source: str(r.source, existing.source), holidays }, user, ctx.now());
-    return store.update('holidaySet', doc, version);
+    const saved = store.update('holidaySet', doc, version);
+    log(user.id, 'holidaySet', id, 'update', `${doc.name}: ${holidays.length}일 (사용 ${holidays.filter((h) => h.enabled).length}일)`);
+    return saved;
   });
 
   app.post('/api/holiday-sets', async (req, reply) => {
@@ -111,6 +122,7 @@ export function registerSettingsRoutes(app: FastifyInstance, ctx: AppContext) {
     const at = ctx.now();
     const doc: HolidaySet = { id: genId(), name: str(r.name) || `공휴일 ${year}`, year, source: str(r.source) || '직접 입력', holidays: [], ...newMeta(user, at) };
     store.insert('holidaySet', doc);
+    log(user.id, 'holidaySet', doc.id, 'create', doc.name);
     reply.code(201);
     return doc;
   });
@@ -128,7 +140,9 @@ export function registerSettingsRoutes(app: FastifyInstance, ctx: AppContext) {
     const version = expectVersion(req.body);
     const r = req.body as Record<string, unknown>;
     const doc: OutputTemplate = touched({ ...existing, name: str(r.name, existing.name), audience: str(r.audience) === 'student' ? 'student' : 'teacher', columns: validColumns(arr<string>(r.columns)), summaryColumns: r.summaryColumns === undefined ? existing.summaryColumns : cleanSummaryColumns(r.summaryColumns), headerNote: str(r.headerNote, existing.headerNote), footerNote: str(r.footerNote, existing.footerNote) }, user, ctx.now());
-    return store.update('template', doc, version);
+    const saved = store.update('template', doc, version);
+    log(user.id, 'template', id, 'update', doc.name);
+    return saved;
   });
 
   app.post('/api/templates', async (req, reply) => {
@@ -137,6 +151,7 @@ export function registerSettingsRoutes(app: FastifyInstance, ctx: AppContext) {
     const at = ctx.now();
     const doc: OutputTemplate = { id: genId(), name: str(r.name) || '새 양식', audience: str(r.audience) === 'student' ? 'student' : 'teacher', columns: validColumns(arr<string>(r.columns)), summaryColumns: cleanSummaryColumns(r.summaryColumns), headerNote: str(r.headerNote), footerNote: str(r.footerNote), ...newMeta(user, at) };
     store.insert('template', doc);
+    log(user.id, 'template', doc.id, 'create', doc.name);
     reply.code(201);
     return doc;
   });
@@ -172,6 +187,7 @@ export function registerSettingsRoutes(app: FastifyInstance, ctx: AppContext) {
     const at = ctx.now();
     const doc: LearningObjective = { ...normalizeObjective(r), ...newMeta(user, at, bool(r.isSample, false)) };
     store.insert('objective', doc);
+    log(user.id, 'objective', doc.id, 'create', `${doc.code} ${doc.title}`);
     reply.code(201);
     return doc;
   });
@@ -183,14 +199,19 @@ export function registerSettingsRoutes(app: FastifyInstance, ctx: AppContext) {
     const version = expectVersion(req.body);
     const r = req.body as Record<string, unknown>;
     const doc: LearningObjective = touched({ ...existing, ...normalizeObjective(r, existing), archived: bool(r.archived, existing.archived) }, user, ctx.now());
-    return store.update('objective', doc, version);
+    const saved = store.update('objective', doc, version);
+    log(user.id, 'objective', id, 'update', `${doc.code} ${doc.title}`);
+    return saved;
   });
 
   app.post('/api/objectives/:id/archive', async (req) => {
     const user = requireAdmin(req);
     const id = (req.params as { id: string }).id;
     const existing = store.mustGet<LearningObjective>('objective', id);
-    return store.update('objective', touched({ ...existing, archived: bool((req.body as Record<string, unknown>)?.archived, true) }, user, ctx.now()), existing.version);
+    const archived = bool((req.body as Record<string, unknown>)?.archived, true);
+    const saved = store.update('objective', touched({ ...existing, archived }, user, ctx.now()), existing.version);
+    log(user.id, 'objective', id, archived ? 'archive' : 'restore', existing.code);
+    return saved;
   });
 
   // ── 샘플 데이터 관리 ──
@@ -201,6 +222,19 @@ export function registerSettingsRoutes(app: FastifyInstance, ctx: AppContext) {
 
   app.delete('/api/samples', async (req) => {
     const user = requireAdmin(req);
+    // 실제 자료가 샘플 교재·과정을 쓰고 있으면 지우지 않는다 (지우면 그 과정으로 계획을 만들 수 없게 된다)
+    const all = <T extends { id: string; isSample: boolean }>(kind: 'textbook' | 'curriculum' | 'plan') => store.list<T & AuditMeta>(kind, { includeArchived: true });
+    const sampleTb = new Set(all<Textbook>('textbook').filter((t) => t.isSample).map((t) => t.id));
+    const sampleCur = new Set(all<Curriculum>('curriculum').filter((c) => c.isSample).map((c) => c.id));
+    const blockers = [
+      ...all<Curriculum>('curriculum')
+        .filter((c) => !c.isSample && c.textbooks.some((ref) => sampleTb.has(ref.textbookId)))
+        .map((c) => `과정 '${c.title}'이(가) 샘플 교재를 씁니다`),
+      ...all<Plan>('plan')
+        .filter((p) => !p.isSample && sampleCur.has(p.curriculumId))
+        .map((p) => `계획 '${p.title}'이(가) 샘플 과정으로 만들어졌습니다`),
+    ];
+    if (blockers.length) throw new HttpError(409, '실제 자료가 샘플을 쓰고 있어 샘플을 지울 수 없습니다. 아래 자료에서 샘플 교재·과정을 빼거나 보관한 뒤 다시 시도하세요.', blockers.slice(0, 20));
     const n = store.deleteSamples();
     store.audit({ at: ctx.now(), userId: user.id, kind: 'samples', docId: '-', action: 'delete', detail: `${n}건` });
     return { deleted: n };

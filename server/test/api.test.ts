@@ -158,7 +158,7 @@ describe('표준과정', () => {
   it('검증된 과정의 구조를 바꾸면 과정 버전이 오르고 초안으로 돌아간다', async () => {
     const get = await asAdmin({ method: 'GET', url: `/api/curricula/${SAMPLE_IDS.curriculumBasic}` });
     const c = get.json();
-    const pub = await asAdmin({ method: 'POST', url: `/api/curricula/${c.id}/publish` });
+    const pub = await asAdmin({ method: 'POST', url: `/api/curricula/${c.id}/publish`, payload: { version: c.version } });
     expect(pub.json().status).toBe('verified');
     expect(pub.json().curriculumVersion).toBe(2);
     const edited = pub.json();
@@ -632,9 +632,12 @@ describe('2차 리뷰 결함 회귀 (서버)', () => {
     // 다시 활성화하면 열린다 (주소 자체를 폐기한 것은 아님)
     await asAdmin({ method: 'PUT', url: `/api/users/${made.json().id}`, payload: { active: true } });
     expect((await app.inject({ method: 'GET', url: `/api/feeds/${feed.token}.ics` })).statusCode).toBe(200);
-    // 계획을 보관하면 404
-    const cur = (await asUser({ method: 'GET', url: `/api/plans/${p.id}` })).json();
-    const arch = await asUser({ method: 'PUT', url: `/api/plans/${p.id}`, payload: { archived: true, version: cur.version } });
+    // 계획을 보관하면 404 (비활성화로 옛 로그인이 끊겼으므로 다시 로그인)
+    const cookie2 = await login('feeduser', 'feeduser1234');
+    const asUser2 = (opts: Record<string, unknown>) => app.inject({ ...opts, headers: { cookie: cookie2 } } as never);
+    expect((await asUser({ method: 'GET', url: `/api/plans/${p.id}` })).statusCode).toBe(401);
+    const cur = (await asUser2({ method: 'GET', url: `/api/plans/${p.id}` })).json();
+    const arch = await asUser2({ method: 'PUT', url: `/api/plans/${p.id}`, payload: { archived: true, version: cur.version } });
     expect(arch.statusCode).toBe(200);
     expect((await app.inject({ method: 'GET', url: `/api/feeds/${feed.token}.ics` })).statusCode).toBe(404);
   });
@@ -668,5 +671,145 @@ describe('2차 리뷰 결함 회귀 (서버)', () => {
     const chk = ok.json().understandingChecks.at(-1);
     expect(chk.textbookId).toBe(a.textbookId);
     expect(chk.objectiveIds).not.toContain('fake-objective');
+  });
+});
+
+describe('3차 리뷰 결함 회귀 (서버)', () => {
+  let built3: Awaited<ReturnType<typeof buildApp>>;
+  beforeAll(async () => {
+    built3 = await buildApp({ dbPath: ':memory:' });
+    seedAdmin(built3.ctx, 'admin', 'admin1234');
+    seedDemoTeacher(built3.ctx);
+    seedSamples(built3.ctx);
+    await built3.app.ready();
+  });
+  afterAll(async () => {
+    await built3.app.close();
+  });
+  const auditRows = (action: string) =>
+    (built3.ctx.store as unknown as { db: { prepare: (s: string) => { all: (...a: unknown[]) => unknown[] } } }).db.prepare('SELECT * FROM audit WHERE action = ?').all(action) as Array<Record<string, string>>;
+  const inj = (opts: Record<string, unknown>) => built3.app.inject(opts as never);
+  const loginTo = async (username: string, password: string) => {
+    const res = await inj({ method: 'POST', url: '/api/auth/login', payload: { username, password } });
+    expect(res.statusCode).toBe(200);
+    const c = res.cookies.find((x) => x.name === 'wb_session')!;
+    return `${c.name}=${c.value}`;
+  };
+  const as = (cookie: string) => (opts: Record<string, unknown>) => inj({ ...opts, headers: { cookie } });
+
+  it('형식에 맞지 않는 아주 긴 아이디는 감사 로그에 그대로 남지 않는다', async () => {
+    const res = await inj({ method: 'POST', url: '/api/auth/login', payload: { username: 'x'.repeat(200000), password: 'nope' } });
+    expect(res.statusCode).toBe(401);
+    expect(auditRows('login_failed').every((r) => r.doc_id.length <= 32 || r.doc_id === '(형식 오류)')).toBe(true);
+  });
+
+  it('비밀번호를 바꾸거나 초기화하면 다른 기기의 로그인이 끊긴다', async () => {
+    const admin = as(await loginTo('admin', 'admin1234'));
+    await admin({ method: 'POST', url: '/api/users', payload: { username: 'sess1', password: 'sess1pass!' } });
+    const c1 = await loginTo('sess1', 'sess1pass!');
+    const c2 = await loginTo('sess1', 'sess1pass!');
+    expect((await as(c1)({ method: 'POST', url: '/api/auth/password', payload: { currentPassword: 'sess1pass!', newPassword: 'sess1pass2!' } })).statusCode).toBe(200);
+    expect((await as(c1)({ method: 'GET', url: '/api/auth/me' })).json()?.username).toBe('sess1');
+    expect((await as(c2)({ method: 'GET', url: '/api/auth/me' })).json()).toBeNull();
+    // 관리자 초기화는 모든 세션을 끊는다
+    const users = (await admin({ method: 'GET', url: '/api/users' })).json();
+    const id = users.find((u: { username: string }) => u.username === 'sess1').id;
+    expect((await admin({ method: 'PUT', url: `/api/users/${id}`, payload: { password: 'reset-pass-1' } })).statusCode).toBe(200);
+    expect((await as(c1)({ method: 'GET', url: '/api/auth/me' })).json()).toBeNull();
+    // 비활성화 뒤 다시 활성화해도 옛 세션은 살아나지 않는다
+    const c3 = await loginTo('sess1', 'reset-pass-1');
+    await admin({ method: 'PUT', url: `/api/users/${id}`, payload: { active: false } });
+    await admin({ method: 'PUT', url: `/api/users/${id}`, payload: { active: true } });
+    expect((await as(c3)({ method: 'GET', url: '/api/auth/me' })).json()).toBeNull();
+    const logged = auditRows('user_update').map((r) => r.detail).join(' | ');
+    expect(logged).toContain('비밀번호 초기화');
+    expect(logged).toContain('비활성화');
+    expect(logged).not.toContain('reset-pass-1');
+  });
+
+  it('없는 아이디도 비밀번호 계산을 거친다 (응답 시간으로 아이디 존재 여부가 드러나지 않게)', async () => {
+    const time = async (username: string) => {
+      const t = performance.now();
+      await inj({ method: 'POST', url: '/api/auth/login', payload: { username, password: 'wrong-password' } });
+      return performance.now() - t;
+    };
+    const known: number[] = [];
+    const unknown: number[] = [];
+    for (let i = 0; i < 3; i++) {
+      known.push(await time('teacher'));
+      unknown.push(await time(`nobody${i}`));
+    }
+    const med = (a: number[]) => [...a].sort((x, y) => x - y)[1];
+    // 예전에는 없는 아이디가 30배 이상 빨랐다. 이제 같은 계산을 하므로 비슷하게 걸린다
+    expect(med(unknown)).toBeGreaterThan(med(known) * 0.5);
+  });
+
+  it('계획 기간·복습 시간·보강 시간의 비정상 값을 거절한다', async () => {
+    const t = as(await loginTo('teacher', 'teacher1234'));
+    const make = (s: Record<string, unknown>) => t({ method: 'POST', url: '/api/plans/preview', payload: { curriculumId: SAMPLE_IDS.curriculumBasic, settings: { ...settings, ...s } } });
+    expect((await make({ startDate: '1000-01-01', endDate: '2999-12-31', weekdays: [0, 1, 2, 3, 4, 5, 6] })).statusCode).toBe(400);
+    expect((await make({ reviewMinutes: -600 })).statusCode).toBe(400);
+    expect((await make({ makeupDays: [{ date: '2026-04-11', minutes: -100 }] })).statusCode).toBe(400);
+    expect((await make({ offDays: [null] })).statusCode).toBe(400);
+    // 형식이 틀린 공휴일 목록 id 는 무시한다 (예전에는 DB 오류 문구가 그대로 나갔다)
+    expect((await make({ holidaySetIds: [{}] })).statusCode).toBe(200);
+    expect((await make({ endDate: '2029-01-01' })).statusCode).toBe(200);
+  });
+
+  it('부분 완료 범위는 배정 범위 안의 정수 구간이어야 한다', async () => {
+    const t = as(await loginTo('teacher', 'teacher1234'));
+    const p = (await t({ method: 'POST', url: '/api/plans', payload: { curriculumId: SAMPLE_IDS.curriculumBasic, settings } })).json();
+    const a = p.assignments.find((x: { portion?: unknown }) => x.portion);
+    const bad = await t({ method: 'POST', url: `/api/plans/${p.id}/records`, payload: { assignmentId: a.id, status: 'partial', completedPortion: { from: 900, to: -5 }, version: p.version } });
+    expect(bad.statusCode).toBe(400);
+    const ok = await t({ method: 'POST', url: `/api/plans/${p.id}/records`, payload: { assignmentId: a.id, status: 'partial', completedPortion: { from: a.portion.from, to: a.portion.from }, version: p.version } });
+    expect(ok.statusCode).toBe(200);
+  });
+
+  it('과정 발행은 화면에서 본 버전이 지금 버전과 같아야 한다', async () => {
+    const admin = as(await loginTo('admin', 'admin1234'));
+    const c = (await admin({ method: 'GET', url: `/api/curricula/${SAMPLE_IDS.curriculumParallel}` })).json();
+    const put = await admin({ method: 'PUT', url: `/api/curricula/${c.id}`, payload: { ...c, title: c.title + ' (수정)', version: c.version } });
+    expect(put.statusCode).toBe(200);
+    expect((await admin({ method: 'POST', url: `/api/curricula/${c.id}/publish`, payload: { version: c.version } })).statusCode).toBe(409);
+    expect((await admin({ method: 'POST', url: `/api/curricula/${c.id}/publish`, payload: {} })).statusCode).toBe(400);
+  });
+
+  it('검토 의견·계획 이름의 길이를 제한한다', async () => {
+    const t = as(await loginTo('teacher', 'teacher1234'));
+    expect((await t({ method: 'POST', url: `/api/curricula/${SAMPLE_IDS.curriculumBasic}/comments`, payload: { text: 'x'.repeat(3000) } })).statusCode).toBe(400);
+    expect((await t({ method: 'POST', url: '/api/plans', payload: { curriculumId: SAMPLE_IDS.curriculumBasic, settings, title: 'x'.repeat(500) } })).statusCode).toBe(400);
+  });
+
+  it('짝이 맞지 않는 대리 문자가 든 제목도 엑셀·달력 내보내기가 된다', async () => {
+    const cookie = await loginTo('teacher', 'teacher1234');
+    const t = as(cookie);
+    const raw = JSON.stringify({ curriculumId: SAMPLE_IDS.curriculumBasic, settings, title: 'TITLE' }).replace('TITLE', 'A' + String.fromCharCode(92) + 'ud800B');
+    const res = await inj({ method: 'POST', url: '/api/plans', headers: { cookie, 'content-type': 'application/json' }, payload: raw });
+    expect(res.statusCode).toBe(201);
+    const id = res.json().id;
+    expect((await t({ method: 'GET', url: `/api/plans/${id}/export.xlsx` })).statusCode).toBe(200);
+    expect((await t({ method: 'GET', url: `/api/plans/${id}/calendar.ics` })).statusCode).toBe(200);
+  });
+
+  it('실제 과정이 샘플 교재를 쓰면 샘플 삭제를 거절하고 이유를 알려 준다', async () => {
+    const admin = as(await loginTo('admin', 'admin1234'));
+    const src = (await admin({ method: 'GET', url: `/api/curricula/${SAMPLE_IDS.curriculumBasic}` })).json();
+    const real = await admin({ method: 'POST', url: '/api/curricula', payload: { ...src, id: undefined, title: '실제 과정', isSample: false } });
+    expect(real.statusCode).toBe(201);
+    const del = await admin({ method: 'DELETE', url: '/api/samples' });
+    expect(del.statusCode).toBe(409);
+    expect(JSON.stringify(del.json().details)).toContain('실제 과정');
+    expect((await admin({ method: 'GET', url: '/api/samples' })).json().count).toBeGreaterThan(0);
+  });
+
+  it('관리자 설정 변경과 과정 보관이 감사 로그에 남는다', async () => {
+    const admin = as(await loginTo('admin', 'admin1234'));
+    const s = (await admin({ method: 'GET', url: '/api/settings' })).json();
+    expect((await admin({ method: 'PUT', url: '/api/settings', payload: { ...s, version: s.version } })).statusCode).toBe(200);
+    expect((await admin({ method: 'PUT', url: '/api/settings', payload: { ...s, defaultReviewMinutes: -5, version: s.version + 1 } })).statusCode).toBe(400);
+    expect((await admin({ method: 'POST', url: `/api/curricula/${SAMPLE_IDS.curriculumAdvance}/archive`, payload: { archived: true } })).statusCode).toBe(200);
+    expect(auditRows('update').some((r) => r.kind === 'settings')).toBe(true);
+    expect(auditRows('archive').some((r) => r.kind === 'curriculum')).toBe(true);
   });
 });

@@ -204,6 +204,12 @@ export class Store {
     this.db.prepare('DELETE FROM sessions WHERE token = ?').run(token);
   }
 
+  /** 이 사용자의 로그인 세션을 모두 끊는다 (keepToken 은 남김). 비밀번호 변경·초기화·비활성화 때 쓴다 */
+  deleteUserSessions(userId: string, keepToken?: string) {
+    if (keepToken) this.db.prepare('DELETE FROM sessions WHERE user_id = ? AND token <> ?').run(userId, keepToken);
+    else this.db.prepare('DELETE FROM sessions WHERE user_id = ?').run(userId);
+  }
+
   // ── 감사 로그 ──
 
   audit(entry: { at: string; userId: string; kind: string; docId: string; action: string; detail: string }) {

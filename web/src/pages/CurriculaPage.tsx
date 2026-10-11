@@ -373,7 +373,18 @@ export function CurriculumEditorPage() {
           {!readOnly && !isNew && (
             <>
               <button onClick={async () => nav(`/curricula/${(await post<Curriculum>(`/api/curricula/${doc.id}/clone`)).id}`)}>복제</button>
-              <button onClick={async () => loaded(await post<Curriculum>(`/api/curricula/${doc.id}/publish`))} title="검증 완료로 표시하고 과정 버전을 올립니다">
+              <button
+                disabled={JSON.stringify(doc) !== baseline}
+                onClick={async () => {
+                  // 화면에서 본 버전을 함께 보내, 그사이 다른 관리자가 바꾼 내용을 확인 없이 '검증됨'으로 발행하지 않게 한다
+                  try {
+                    loaded(await post<Curriculum>(`/api/curricula/${doc.id}/publish`, { version: doc.version }));
+                  } catch (e) {
+                    setError(errorMessage(e));
+                  }
+                }}
+                title={JSON.stringify(doc) !== baseline ? '고친 내용을 먼저 저장하세요' : '검증 완료로 표시하고 과정 버전을 올립니다'}
+              >
                 검증 완료·새 버전 발행
               </button>
             </>
