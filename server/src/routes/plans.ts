@@ -429,6 +429,8 @@ export function registerPlanRoutes(app: FastifyInstance, ctx: AppContext) {
     if (status === 'partial' && !rec.completedPortion && rec.completedFraction === undefined) throw new HttpError(400, '부분 완료는 완료한 범위 또는 비율이 필요합니다.');
     const doc: Plan = touched({ ...existing, records: [...existing.records, rec], history: [...existing.history, { id: genId(), at, by: user.id, action: 'record', description: `${lesson.date} 기록: ${status}` }] }, user, at);
     const saved = store.update('plan', doc, existing.version);
+    // slim: 휴대폰처럼 응답의 계획 전체가 필요 없는 화면은 작은 응답만 받는다 (1년 계획이면 전체 응답이 1MB 안팎)
+    if (bool(r.slim, false)) return { id: saved.id, version: saved.version, planVersion: saved.planVersion, recordId: rec.id, remaining: remainingAfterRecord(saved, a.id), merged };
     return { ...planResponse(saved), remaining: remainingAfterRecord(saved, a.id), merged };
   });
 
@@ -445,7 +447,9 @@ export function registerPlanRoutes(app: FastifyInstance, ctx: AppContext) {
     const at = ctx.now();
     const chk: UnderstandingCheck = { id: genId(), lessonId: lesson.id, itemId: str(r.itemId), textbookId: str(r.textbookId), objectiveIds: arr<string>(r.objectiveIds), result: result as UnderstandingCheck['result'], note: str(r.note), checkedAt: at, checkedBy: user.id };
     const doc: Plan = touched({ ...existing, understandingChecks: [...existing.understandingChecks, chk] }, user, at);
-    return { ...planResponse(store.update('plan', doc, existing.version)), merged };
+    const savedChk = store.update('plan', doc, existing.version);
+    if (bool(r.slim, false)) return { id: savedChk.id, version: savedChk.version, planVersion: savedChk.planVersion, checkId: chk.id, merged };
+    return { ...planResponse(savedChk), merged };
   });
 
   app.post('/api/plans/:id/confirm', async (req) => {

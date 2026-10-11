@@ -571,3 +571,21 @@ describe('캘린더 구독 주소', () => {
     expect((await asTeacher({ method: 'POST', url: `/api/plans/${p.id}/calendar-feeds`, payload: { audience: 'teacher', version: p.version } })).statusCode).toBe(403);
   });
 });
+
+describe('기록 저장의 작은 응답 (휴대폰)', () => {
+  it('slim 이면 계획 전체 대신 버전·남은 범위만 돌려주고, 저장은 그대로 된다', async () => {
+    const p = (await asTeacher({ method: 'POST', url: '/api/plans', payload: { curriculumId: SAMPLE_IDS.curriculumParallel, settings } })).json();
+    const a = p.assignments.find((x: { textbookId: string }) => x.textbookId === SAMPLE_IDS.marketTextbook);
+    const r = await asTeacher({ method: 'POST', url: `/api/plans/${p.id}/records`, payload: { assignmentId: a.id, status: 'partial', completedPortion: { from: 12, to: 17 }, version: p.version, slim: true } });
+    expect(r.statusCode).toBe(200);
+    const body = r.json();
+    expect(Object.keys(body).sort()).toEqual(['id', 'merged', 'planVersion', 'recordId', 'remaining', 'version'].sort());
+    expect(body.remaining.portion).toEqual({ from: 18, to: 23 });
+    expect(r.body.length).toBeLessThan(500);
+    const full = (await asTeacher({ method: 'GET', url: `/api/plans/${p.id}` })).json();
+    expect(full.records.some((x: { id: string }) => x.id === body.recordId)).toBe(true);
+    expect(full.version).toBe(body.version);
+    const c = await asTeacher({ method: 'POST', url: `/api/plans/${p.id}/checks`, payload: { lessonId: a.lessonId, itemId: a.itemId, textbookId: a.textbookId, objectiveIds: [], result: 'confirmed', version: body.version, slim: true } });
+    expect(Object.keys(c.json()).sort()).toEqual(['checkId', 'id', 'merged', 'planVersion', 'version'].sort());
+  });
+});

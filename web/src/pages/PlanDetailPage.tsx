@@ -861,7 +861,7 @@ function UnderstandingCheckForm({ plan, lessonId, reload }: { plan: PlanDoc; les
             onClick={async () => {
               const it = items.find((x) => x.a.itemId === itemId);
               try {
-                await post(`/api/plans/${plan.id}/checks`, { lessonId, itemId, textbookId: it?.a.textbookId, objectiveIds: it?.item?.objectiveIds ?? [], result, note, version: plan.version });
+                await post(`/api/plans/${plan.id}/checks`, { lessonId, itemId, textbookId: it?.a.textbookId, objectiveIds: it?.item?.objectiveIds ?? [], result, note, version: plan.version, slim: true });
                 setOpen(false);
                 reload();
               } catch (e) {

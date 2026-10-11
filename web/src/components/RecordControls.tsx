@@ -30,7 +30,7 @@ export function RecordControls({ planId, version, view, onSaved, compact }: Prop
     setBusy(true);
     setError('');
     try {
-      await post(`/api/plans/${planId}/records`, { assignmentId: a.id, status, version, reason, note, ...extra });
+      await post(`/api/plans/${planId}/records`, { assignmentId: a.id, status, version, reason, note, ...extra, slim: true });
       setMode('');
       onSaved();
     } catch (e) {
