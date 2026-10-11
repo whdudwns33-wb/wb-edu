@@ -176,3 +176,22 @@ export function textItemsToLines(items: Array<{ str: string; transform: number[]
     })
     .filter(Boolean);
 }
+
+/** OCR 결과를 목차 줄로 정리: 공백 정리, 점선 통일, 숫자 사이 잘못 들어간 공백 제거 */
+export function normalizeOcrLine(s: string): string {
+  let out = s
+    .replace(/[|¦]/g, ' ')
+    .replace(/[·•∙⋯…]+/g, '...')
+    .replace(/(\.\s*){3,}/g, ' ........ ')
+    .replace(/(\d)\s+(?=\d\s*$)/g, '$1') // 줄 끝 '1 2' → '12'
+    .replace(/\s+/g, ' ')
+    .trim();
+  // 점선을 글자로 잘못 읽은 짧은 조각(예: 'Ce', 'ee', '--')이 한글 제목과 쪽번호 사이에 남으면 점선으로 바꾼다.
+  // 영어 제목의 실제 단어를 지우지 않도록 한글이 있는 줄에서, 3글자 이하 조각만 다룬다.
+  if (/[가-힣]/.test(out)) {
+    out = out.replace(/(?:\s+[A-Za-z.,:;'"`~\-_=]{1,3})+\s+(\d{1,4})$/, ' ........ $1');
+    // 점선이 숫자·o·e·c 덩어리로 읽힌 경우 (예: '파악하기 20200 36'): 한글 바로 뒤, 쪽번호 바로 앞의 3글자 이상 덩어리
+    out = out.replace(/([가-힣)])\s+[0-9oOeEcC.,:;'`~\-_]{3,}\s+(\d{1,4})$/, '$1 ........ $2');
+  }
+  return out;
+}

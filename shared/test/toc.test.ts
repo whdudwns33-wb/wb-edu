@@ -89,3 +89,25 @@ describe('하위 항목 없는 대단원', () => {
     expect(p.items.map((i) => `${i.unit}|${i.title}|${i.range!.from}-${i.range!.to}`)).toEqual(['Unit 1 Main Idea|1. A|12-19', 'Unit 2 Review Test|Unit 2 Review Test|20-25']);
   });
 });
+
+describe('글자 인식(OCR) 결과 정리', () => {
+  it('점선·가운뎃점을 통일하고 줄 끝 숫자 사이 공백을 붙여 목차로 읽히게 한다', async () => {
+    const { normalizeOcrLine } = await import('../src/toc.ts');
+    expect(normalizeOcrLine('1. 중심 문장 찾기 · · · · · · 1 2')).toBe('1. 중심 문장 찾기 ........ 12');
+    expect(normalizeOcrLine('2. 문단 요약하기 …… 24')).toBe('2. 문단 요약하기 ........ 24');
+    expect(normalizeOcrLine('|  3단원  종합 평가 ....  60 ')).toBe('3단원 종합 평가 ........ 60');
+    // 실제 브라우저 OCR에서 점선이 'Ce' 로 읽힌 결과 (2026-10-11 확인)
+    expect(normalizeOcrLine('1. 중심 문장 찾기 Ce 12')).toBe('1. 중심 문장 찾기 ........ 12');
+    expect(normalizeOcrLine('2단원 설명하는 글 Ce ee 36')).toBe('2단원 설명하는 글 ........ 36');
+    // 스캔 PDF OCR에서 점선이 숫자 덩어리로 읽힌 결과 (2026-10-11 확인)
+    expect(normalizeOcrLine('1. 설명 방법 파악하기 20200 36')).toBe('1. 설명 방법 파악하기 ........ 36');
+    // 제목 안의 실제 숫자(연도 등)는 건드리지 않는다
+    expect(normalizeOcrLine('2025 수능 대비 12')).toBe('2025 수능 대비 12');
+    expect(normalizeOcrLine('1. 분수 2 12')).toBe('1. 분수 2 12');
+    // 영어 제목의 실제 단어는 지우지 않는다
+    expect(normalizeOcrLine('Unit 3 Review Test 60')).toBe('Unit 3 Review Test 60');
+    expect(normalizeOcrLine('3단원 Test 60')).toBe('3단원 Test 60');
+    const p = parseToc(['1. 중심 문장 찾기 · · · · · · 1 2', '2. 문단 요약하기 …… 24'].map(normalizeOcrLine).join('\n'), { lastPage: 30 });
+    expect(p.items.map((i) => i.range)).toEqual([{ from: 12, to: 23 }, { from: 24, to: 30 }]);
+  });
+});

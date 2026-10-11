@@ -12,6 +12,39 @@ export interface PdfTextResult {
   emptyPages: number[];
 }
 
+async function loadPdf(data: ArrayBuffer) {
+  const pdfjs = await import('pdfjs-dist');
+  const workerUrl = (await import('pdfjs-dist/build/pdf.worker.min.mjs?url')).default;
+  pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
+  return pdfjs.getDocument({ data: new Uint8Array(data) }).promise;
+}
+
+/**
+ * 스캔 PDF 페이지를 그림으로 그린다 (글자 인식용). 해상도는 긴 변 약 2000px.
+ * ArrayBuffer 는 pdf.js 가 넘겨받아 비우므로 매번 새로 읽은 것을 넘긴다.
+ */
+export async function renderPdfPages(data: ArrayBuffer, pages: number[]): Promise<HTMLCanvasElement[]> {
+  const doc = await loadPdf(data);
+  const out: HTMLCanvasElement[] = [];
+  for (const p of pages) {
+    if (p < 1 || p > doc.numPages) continue;
+    const page = await doc.getPage(p);
+    const base = page.getViewport({ scale: 1 });
+    const scale = Math.min(4, 2000 / Math.max(base.width, base.height));
+    const viewport = page.getViewport({ scale });
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(viewport.width);
+    canvas.height = Math.round(viewport.height);
+    const ctx = canvas.getContext('2d')!;
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    await page.render({ canvasContext: ctx, viewport }).promise;
+    out.push(canvas);
+  }
+  await doc.destroy();
+  return out;
+}
+
 export async function extractPdfLines(data: ArrayBuffer, fromPage = 1, toPage?: number): Promise<PdfTextResult> {
   const pdfjs = await import('pdfjs-dist');
   const workerUrl = (await import('pdfjs-dist/build/pdf.worker.min.mjs?url')).default;

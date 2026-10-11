@@ -8,3 +8,4 @@ server/data/backups/
 .DS_Store
 .env
 .env.prod
+web/public/ocr/

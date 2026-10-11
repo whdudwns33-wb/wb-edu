@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import type { AppSettings, ImportPreview, LearningItem, LearningObjective, ProgressUnit, Textbook, TimingSuggestion } from '@wb/shared';
 import { PROGRESS_UNIT_LABEL, isRangedUnit, itemQuantity, parseToc } from '@wb/shared';
-import { extractPdfLines } from '../pdfText.ts';
+import { extractPdfLines, renderPdfPages } from '../pdfText.ts';
+import { recognizeImages } from '../ocr.ts';
 import { RemoteChangeBanner, useRemoteVersion } from '../components/RemoteChange.tsx';
 import { get, post, put, errorMessage } from '../api.ts';
 import { useAuth } from '../auth.tsx';
@@ -609,6 +610,10 @@ function ImportModal({ defaultUnit, onClose, onApply }: { defaultUnit: ProgressU
   const [pdfTo, setPdfTo] = useState('5');
   const [pdfInfo, setPdfInfo] = useState('');
   const [pdfBusy, setPdfBusy] = useState(false);
+  const [pdfFile, setPdfFile] = useState<File | null>(null);
+  const [scanPages, setScanPages] = useState<number[]>([]);
+  const [ocrBusy, setOcrBusy] = useState(false);
+  const [ocrInfo, setOcrInfo] = useState('');
   const run = async () => {
     setError('');
     try {
@@ -623,22 +628,43 @@ function ImportModal({ defaultUnit, onClose, onApply }: { defaultUnit: ProgressU
   };
   const loadPdf = async (file: File | undefined) => {
     if (!file) return;
+    setPdfFile(file);
+    setScanPages([]);
     setPdfBusy(true);
     setError('');
     setPdfInfo('');
     try {
       const r = await extractPdfLines(await file.arrayBuffer(), Number(pdfFrom) || 1, Number(pdfTo) || undefined);
       setText(r.lines.join('\n'));
+      setScanPages(r.emptyPages);
       setPreview(null);
       setPdfInfo(
         `${file.name}: 전체 ${r.pageCount}쪽 중 ${pdfFrom}~${Math.min(Number(pdfTo) || r.pageCount, r.pageCount)}쪽에서 ${r.lines.length}줄을 읽었습니다.` +
-          (r.emptyPages.length ? ` 텍스트가 없는 페이지 ${r.emptyPages.join(', ')} (스캔본이면 목차를 직접 붙여 넣으세요).` : '') +
+          (r.emptyPages.length ? ` 텍스트가 없는 페이지 ${r.emptyPages.join(', ')}가 있습니다(스캔본). 아래 '글자 인식'으로 읽을 수 있습니다.` : '') +
           ' 목차가 아닌 줄은 지우고 미리보기를 누르세요.',
       );
     } catch (e) {
       setError(`PDF를 읽지 못했습니다: ${errorMessage(e)}`);
     } finally {
       setPdfBusy(false);
+    }
+  };
+  /** 글자 인식: 스캔 PDF 페이지 또는 사진. 결과는 입력 칸에 넣고 사람이 고친 뒤 미리보기 */
+  const runOcr = async (sources: () => Promise<Array<Blob | HTMLCanvasElement>>, label: string) => {
+    setOcrBusy(true);
+    setError('');
+    setOcrInfo('글자 인식 준비 중… (처음에는 인식 데이터를 불러오느라 시간이 걸립니다)');
+    try {
+      const images = await sources();
+      const r = await recognizeImages(images, (pr) => setOcrInfo(`${label} ${pr.page ?? ''}/${pr.pageCount ?? ''} · ${pr.status} ${Math.round(pr.progress * 100)}%`));
+      setText((t) => (t.trim() ? t.trimEnd() + '\n' : '') + r.lines.join('\n'));
+      setPreview(null);
+      setOcrInfo(`${label}: ${r.lines.length}줄을 읽었습니다 (평균 신뢰도 ${r.confidence}%). 글자 인식은 틀릴 수 있으니 제목·쪽번호를 확인하고 고친 뒤 미리보기를 누르세요.`);
+    } catch (e) {
+      setOcrInfo('');
+      setError(`글자 인식에 실패했습니다: ${errorMessage(e)}`);
+    } finally {
+      setOcrBusy(false);
     }
   };
   const hasErrors = preview?.issues.some((i) => i.level === 'error');
@@ -669,6 +695,17 @@ function ImportModal({ defaultUnit, onClose, onApply }: { defaultUnit: ProgressU
             {pdfBusy && <span className="small muted">읽는 중…</span>}
           </div>
           {pdfInfo && <Alert kind="info">{pdfInfo}</Alert>}
+          <div className="row mt">
+            {pdfFile && scanPages.length > 0 && (
+              <button disabled={ocrBusy} onClick={async () => { const f = pdfFile; await runOcr(async () => renderPdfPages(await f.arrayBuffer(), scanPages), `PDF ${scanPages.join(', ')}쪽 글자 인식`); }}>
+                스캔 페이지 {scanPages.join(', ')} 글자 인식
+              </button>
+            )}
+            <span className="small">목차 사진</span>
+            <input type="file" accept="image/*" multiple disabled={ocrBusy} aria-label="목차 사진 선택" onChange={(e) => { const fs = [...(e.target.files ?? [])]; if (fs.length) runOcr(async () => fs, `사진 ${fs.length}장 글자 인식`); e.target.value = ''; }} />
+            {ocrBusy && <span className="small muted">인식 중…</span>}
+          </div>
+          {ocrInfo && <Alert kind="info">{ocrInfo}</Alert>}
           <div className="row mt">
             <label className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
               <span>본문 마지막 쪽</span>
