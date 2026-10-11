@@ -133,7 +133,7 @@ export function PlanDetailPage() {
       {tab === 'records' && <RecordsTab plan={plan} reload={load} />}
       {tab === 'objectives' && <ObjectivesTab plan={plan} onPlan={setPlan} />}
       {tab === 'history' && <HistoryTab plan={plan} runOp={runOp} />}
-      {tab === 'output' && <OutputTab plan={plan} />}
+      {tab === 'output' && <OutputTab plan={plan} onPlan={setPlan} />}
 
       {opPreview && (
         <Modal title="변경 전 비교" onClose={() => setOpPreview(null)}>
@@ -1162,7 +1162,7 @@ function HistoryTab({ plan, runOp }: { plan: PlanDoc; runOp: (op: string, params
 // 출력
 // ──────────────────────────────────────────────
 
-function OutputTab({ plan }: { plan: PlanDoc }) {
+function OutputTab({ plan, onPlan }: { plan: PlanDoc; onPlan: (p: PlanDoc) => void }) {
   const [audience, setAudience] = useState<'teacher' | 'student'>('teacher');
   const [templateId, setTemplateId] = useState('');
   const [levels, setLevels] = useState<Level[]>(['year', 'quarter', 'month', 'week', 'day']);
@@ -1224,6 +1224,98 @@ function OutputTab({ plan }: { plan: PlanDoc }) {
         </a>
       </div>
       <p className="muted small mt">PDF는 인쇄 보기에서 브라우저의 'PDF로 저장'을 사용합니다. 화면·엑셀·인쇄 모두 같은 집계 함수를 사용하므로 범위·시간·버전이 일치합니다 (계획 v{plan.planVersion}). 캘린더 파일은 수업마다 종일 일정 하나이며, 학생·학부모용은 지도 메모를 넣지 않습니다.</p>
+      <CalendarFeeds plan={plan} onPlan={onPlan} />
+    </div>
+  );
+}
+
+/** 캘린더 구독 주소: 캘린더 앱의 'URL로 구독'에 넣으면 일정 변경이 자동으로 반영된다 */
+function CalendarFeeds({ plan, onPlan }: { plan: PlanDoc; onPlan: (p: PlanDoc) => void }) {
+  const [audience, setAudience] = useState<'teacher' | 'student'>('student');
+  const [label, setLabel] = useState('');
+  const [err, setErr] = useState('');
+  const [copied, setCopied] = useState('');
+  const feeds = plan.calendarFeeds ?? [];
+  const urlOf = (token: string) => `${window.location.origin}/api/feeds/${token}.ics`;
+  const create = async () => {
+    setErr('');
+    try {
+      onPlan(await post<PlanDoc>(`/api/plans/${plan.id}/calendar-feeds`, { audience, label, version: plan.version }));
+      setLabel('');
+    } catch (e) {
+      setErr(errorMessage(e));
+    }
+  };
+  const revoke = async (token: string) => {
+    setErr('');
+    try {
+      onPlan(await post<PlanDoc>(`/api/plans/${plan.id}/calendar-feeds/revoke`, { token, version: plan.version }));
+    } catch (e) {
+      setErr(errorMessage(e));
+    }
+  };
+  return (
+    <div className="panel tight mt calendar-feeds">
+      <h3>캘린더 구독 주소</h3>
+      <p className="muted small">
+        캘린더 앱의 'URL로 구독(구독 캘린더 추가)'에 넣으면 일정이 바뀔 때마다 앱이 자동으로 다시 받아 갑니다. 이 주소는 로그인 없이 열리므로 필요한 사람에게만 알려 주고, 더 이상 쓰지 않으면 폐기하세요. 구글 캘린더 등 인터넷 서비스에서 구독하려면 이 서버가 인터넷에서 열려 있어야 합니다(배포 가이드 참고). 같은 와이파이의 기기에서는 바로 쓸 수 있습니다.
+      </p>
+      {err && <Alert kind="danger">{err}</Alert>}
+      {feeds.length === 0 ? (
+        <p className="small muted">아직 만든 구독 주소가 없습니다.</p>
+      ) : (
+        <div className="table-wrap">
+          <table className="compact">
+            <thead>
+              <tr>
+                <th>이름</th>
+                <th>대상</th>
+                <th>주소</th>
+                <th>만든 날</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {feeds.map((f) => (
+                <tr key={f.token}>
+                  <td>{f.label}</td>
+                  <td>{f.audience === 'student' ? '학생·학부모용' : '강사용'}</td>
+                  <td className="small" style={{ wordBreak: 'break-all' }}>
+                    <code>{urlOf(f.token)}</code>
+                  </td>
+                  <td className="small nowrap">{f.createdAt.slice(0, 10)}</td>
+                  <td className="nowrap">
+                    <button
+                      className="sm"
+                      onClick={async () => {
+                        try {
+                          await navigator.clipboard.writeText(urlOf(f.token));
+                          setCopied(f.token);
+                        } catch {
+                          setErr('복사하지 못했습니다. 주소를 직접 선택해 복사하세요.');
+                        }
+                      }}
+                    >
+                      {copied === f.token ? '복사됨' : '복사'}
+                    </button>{' '}
+                    <button className="sm danger" onClick={() => revoke(f.token)}>
+                      폐기
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <div className="row mt">
+        <select value={audience} onChange={(e) => setAudience(e.target.value as typeof audience)} aria-label="구독 대상">
+          <option value="student">학생·학부모용 (지도 메모 제외)</option>
+          <option value="teacher">강사용</option>
+        </select>
+        <input placeholder="이름 (예: 초5 A반 학부모)" value={label} onChange={(e) => setLabel(e.target.value)} aria-label="구독 주소 이름" />
+        <button onClick={create}>구독 주소 만들기</button>
+      </div>
     </div>
   );
 }

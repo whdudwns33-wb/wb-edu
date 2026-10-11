@@ -469,6 +469,23 @@ export function CurriculumEditorPage() {
           <div className="panel tight" style={{ background: 'var(--primary-soft)' }}>
             <div className="row">
               <strong>선택: {itemOf(sel.entry)?.title}</strong>
+              {/* 휴대폰처럼 끌어 놓기가 어려운 화면에서 원하는 차시로 바로 보내기 */}
+              <select
+                className="sm"
+                aria-label="선택한 항목을 보낼 차시"
+                value={sel.sessionIdx >= 0 ? doc.sessions[sel.sessionIdx].id : '__unassigned'}
+                onChange={(e) => {
+                  const target = e.target.value;
+                  setDoc(moveEntry(doc, sel.entry.id, target === '__unassigned' ? null : target));
+                }}
+              >
+                {doc.sessions.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.order}차시로 ({sessionMinutes(s)}분)
+                  </option>
+                ))}
+                <option value="__unassigned">미배정 목록으로</option>
+              </select>
               <button className="sm" onClick={() => moveSel(-1)} disabled={sel.sessionIdx <= 0}>
                 ← 이전 차시
               </button>

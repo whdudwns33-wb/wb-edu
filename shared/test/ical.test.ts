@@ -49,6 +49,13 @@ describe('달력 파일(.ics) 내보내기', () => {
     expect(withCancelled.slice(idx, idx + 6).some((l) => l === 'STATUS:CANCELLED')).toBe(true);
   });
 
+  it('캘린더 이름에는 이스케이프가 필요한 쉼표·세미콜론을 남기지 않는다 (ical.js 검증에서 발견)', () => {
+    const { plan } = makePlan(basic, tb, baseSettings());
+    plan.title = '[가상] 병행 계획, 초5; A반';
+    const name = unfold(planToIcal(plan)).find((l) => l.startsWith('X-WR-CALNAME:'))!;
+    expect(name).toBe('X-WR-CALNAME:병행 계획 · 초5 · A반');
+  });
+
   it('줄 접기는 한글 글자를 자르지 않는다', () => {
     const long = 'SUMMARY:' + '가'.repeat(60);
     const folded = foldLine(long);

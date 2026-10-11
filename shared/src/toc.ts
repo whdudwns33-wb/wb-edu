@@ -143,12 +143,30 @@ export function parseToc(text: string, opts: TocOptions = {}): ImportPreview {
   return { items, issues, headers: ['대단원', '제목', '시작', '끝'], rowCount: lines.length };
 }
 
+type Part = { x: number; str: string; w: number };
+
+function joinParts(parts: Part[]): string {
+  let out = '';
+  let lastEnd = -Infinity;
+  for (const p of parts) {
+    // 조각 사이가 떨어져 있으면 공백을 넣는다
+    if (out && p.x - lastEnd > 1) out += ' ';
+    out += p.str;
+    lastEnd = p.x + p.w;
+  }
+  return out.replace(/\s+/g, ' ').trim();
+}
+
 /**
  * PDF 텍스트 조각(pdf.js getTextContent 의 items)을 줄로 묶는다.
  * 같은 y 좌표(허용 오차 2)의 조각을 x 순서로 이어 붙이고, 위에서 아래 순서로 정렬한다.
+ *
+ * 2단 목차: 한 줄 안에서 '쪽번호로 끝나는 조각' 뒤에 큰 빈칸(minColumnGap 이상)이 있고 그 뒤가
+ * 점선·숫자만이 아닌 글자로 시작하면 단이 나뉜 것으로 본다. 이때 왼쪽 단을 위에서 아래로 모두 읽은 뒤
+ * 오른쪽 단을 읽는다 (목차를 읽는 순서).
  */
-export function textItemsToLines(items: Array<{ str: string; transform: number[]; width?: number }>): string[] {
-  const rows: Array<{ y: number; parts: Array<{ x: number; str: string; w: number }> }> = [];
+export function textItemsToLines(items: Array<{ str: string; transform: number[]; width?: number }>, minColumnGap = 30): string[] {
+  const rows: Array<{ y: number; parts: Part[] }> = [];
   for (const it of items) {
     if (!it.str || !it.str.trim()) continue;
     const x = it.transform[4];
@@ -160,21 +178,47 @@ export function textItemsToLines(items: Array<{ str: string; transform: number[]
     }
     row.parts.push({ x, str: it.str, w: it.width ?? 0 });
   }
-  return rows
-    .sort((a, b) => b.y - a.y)
-    .map((r) => {
-      const parts = r.parts.sort((a, b) => a.x - b.x);
-      let out = '';
-      let lastEnd = -Infinity;
-      for (const p of parts) {
-        // 조각 사이가 떨어져 있으면 공백을 넣는다
-        if (out && p.x - lastEnd > 1) out += ' ';
-        out += p.str;
-        lastEnd = p.x + p.w;
+  rows.sort((a, b) => b.y - a.y);
+
+  // 각 줄을 단 조각(segment)으로 나눈다
+  const segRows = rows.map((r) => {
+    const parts = [...r.parts].sort((a, b) => a.x - b.x);
+    const segs: Part[][] = [[]];
+    for (let i = 0; i < parts.length; i++) {
+      const p = parts[i];
+      const cur = segs[segs.length - 1];
+      if (cur.length) {
+        const prev = cur[cur.length - 1];
+        const gap = p.x - (prev.x + prev.w);
+        const leftText = joinParts(cur);
+        const rightStart = p.str.trim();
+        const looksLikeColumnBreak = gap >= minColumnGap && /\d{1,4}$/.test(leftText) && !/^[.·…‥_\-–—]/.test(rightStart) && !/^\d+$/.test(rightStart);
+        if (looksLikeColumnBreak) {
+          segs.push([p]);
+          continue;
+        }
       }
-      return out.replace(/\s+/g, ' ').trim();
-    })
-    .filter(Boolean);
+      cur.push(p);
+    }
+    return segs.filter((s) => s.length);
+  });
+
+  const splitStarts = segRows.flatMap((segs) => segs.slice(1).map((s) => s[0].x));
+  if (splitStarts.length === 0) return segRows.map((segs) => joinParts(segs.flat())).filter(Boolean);
+
+  // 오른쪽 단의 시작 x: 확실히 나뉜 조각들의 가장 왼쪽 시작점.
+  // 이 경계를 모든 줄에 적용한다 (쪽번호 없는 대단원 줄도 두 단에 걸쳐 있을 수 있으므로).
+  const splitX = Math.min(...splitStarts) - 5;
+  const left: string[] = [];
+  const right: string[] = [];
+  for (const r of rows) {
+    const parts = [...r.parts].sort((a, b) => a.x - b.x);
+    const l = joinParts(parts.filter((p) => p.x < splitX));
+    const rt = joinParts(parts.filter((p) => p.x >= splitX));
+    if (l) left.push(l);
+    if (rt) right.push(rt);
+  }
+  return [...left, ...right];
 }
 
 /** OCR 결과를 목차 줄로 정리: 공백 정리, 점선 통일, 숫자 사이 잘못 들어간 공백 제거 */

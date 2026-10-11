@@ -65,7 +65,8 @@ export function planToIcal(plan: Plan, opts: IcalOptions = {}): string {
     'PRODID:-//WB//Curriculum Planner//KO',
     'CALSCALE:GREGORIAN',
     'METHOD:PUBLISH',
-    `X-WR-CALNAME:${esc(clean(plan.title))}`,
+    // 비표준 X- 속성은 앱에 따라 이스케이프를 풀지 않아 '\,' 가 그대로 보이므로, 캘린더 이름에서는 쉼표·세미콜론을 가운뎃점으로 바꾼다
+    `X-WR-CALNAME:${esc(clean(plan.title).replace(/\s*[,;]\s*/g, ' · '))}`,
     'X-WR-TIMEZONE:Asia/Seoul',
   ];
   for (const lesson of [...plan.lessons].sort((a, b) => (a.date < b.date ? -1 : 1))) {

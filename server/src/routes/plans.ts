@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import { randomBytes } from 'node:crypto';
 import type { AppSettings, Curriculum, CurriculumTextbookRef, HolidaySet, ISODate, LearningObjective, OutputTemplate, Plan, PlanSettings, PlanSnapshot, ProgressRecord, SessionUser, Textbook, UnderstandingCheck } from '@wb/shared';
 import {
   addMakeupDay,
@@ -495,6 +496,7 @@ export function registerPlanRoutes(app: FastifyInstance, ctx: AppContext) {
       confirmedBy: undefined,
       history: [{ id: genId(), at, by: user.id, action: 'create', description: `'${src.title}' 복제 (학생정보·완료 기록 제외)` }],
       allowedUserIds: [],
+      calendarFeeds: undefined,
       ...newMeta(user, at, src.isSample),
     };
     store.insert('plan', plan);
@@ -560,6 +562,52 @@ export function registerPlanRoutes(app: FastifyInstance, ctx: AppContext) {
   });
 
   /** 달력 파일(.ics) 내보내기: 구글·애플·아웃룩 캘린더에서 '가져오기'로 사용 */
+  /**
+   * 캘린더 구독 (로그인 없이 비밀 주소로 연다). 캘린더 앱이 주기적으로 다시 받아 가므로 일정 변경이 자동 반영된다.
+   * 주소를 모르면 열 수 없고, 폐기하거나 계획을 보관하면 404 가 된다.
+   */
+  app.get('/api/feeds/:file', async (req, reply) => {
+    const file = (req.params as { file: string }).file;
+    const token = file.endsWith('.ics') ? file.slice(0, -4) : file;
+    if (!/^[A-Za-z0-9_-]{32}$/.test(token)) return reply.code(404).send({ error: 'Not found' });
+    const plan = store.list<Plan>('plan').find((p) => p.calendarFeeds?.some((f) => f.token === token));
+    const feed = plan?.calendarFeeds?.find((f) => f.token === token);
+    if (!plan || !feed) return reply.code(404).send({ error: 'Not found' });
+    reply.header('Content-Type', 'text/calendar; charset=utf-8');
+    reply.header('Cache-Control', 'no-store');
+    return reply.send(planToIcal(plan, { audience: feed.audience }));
+  });
+
+  /** 캘린더 구독 주소 만들기 (계획에 접근할 수 있는 사람) */
+  app.post('/api/plans/:id/calendar-feeds', async (req) => {
+    const user = requireUser(req);
+    const existing = mustAccess(user, store.mustGet<Plan>('plan', (req.params as { id: string }).id));
+    const version = expectVersion(req.body);
+    const r = req.body as Record<string, unknown>;
+    const audience = str(r.audience) === 'student' ? 'student' : 'teacher';
+    const feeds = existing.calendarFeeds ?? [];
+    if (feeds.length >= 10) throw new HttpError(400, '구독 주소는 계획마다 10개까지 만들 수 있습니다. 쓰지 않는 주소를 폐기하세요.');
+    const at = ctx.now();
+    const feed = { token: randomBytes(24).toString('base64url'), audience, createdAt: at, createdBy: user.id, label: str(r.label).slice(0, 40) || (audience === 'student' ? '학생·학부모용' : '강사용') } as const;
+    const doc: Plan = touched({ ...existing, calendarFeeds: [...feeds, feed] }, user, at);
+    store.audit({ at, userId: user.id, kind: 'plan', docId: existing.id, action: 'calendar_feed_create', detail: `${feed.label} (${audience})` });
+    return planResponse(store.update('plan', doc, version));
+  });
+
+  /** 캘린더 구독 주소 폐기 */
+  app.post('/api/plans/:id/calendar-feeds/revoke', async (req) => {
+    const user = requireUser(req);
+    const existing = mustAccess(user, store.mustGet<Plan>('plan', (req.params as { id: string }).id));
+    const version = expectVersion(req.body);
+    const token = str((req.body as Record<string, unknown>).token);
+    const feeds = existing.calendarFeeds ?? [];
+    if (!feeds.some((f) => f.token === token)) throw new HttpError(404, '구독 주소를 찾을 수 없습니다.');
+    const at = ctx.now();
+    const doc: Plan = touched({ ...existing, calendarFeeds: feeds.filter((f) => f.token !== token) }, user, at);
+    store.audit({ at, userId: user.id, kind: 'plan', docId: existing.id, action: 'calendar_feed_revoke', detail: token.slice(0, 6) });
+    return planResponse(store.update('plan', doc, version));
+  });
+
   app.get('/api/plans/:id/calendar.ics', async (req, reply) => {
     const user = requireUser(req);
     const plan = mustAccess(user, store.mustGet<Plan>('plan', (req.params as { id: string }).id));

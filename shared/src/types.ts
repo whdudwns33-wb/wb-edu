@@ -554,6 +554,11 @@ export interface Plan extends AuditMeta {
   confirmedBy?: string;
   /** 허용된 강사 (관리자는 항상 가능) */
   allowedUserIds: string[];
+  /**
+   * 캘린더 구독 주소 (로그인 없이 열리는 비밀 주소). 폐기하면 바로 막힌다.
+   * 복제 시 따라가지 않는다.
+   */
+  calendarFeeds?: Array<{ token: string; audience: 'teacher' | 'student'; createdAt: string; createdBy: string; label: string }>;
 }
 
 // ──────────────────────────────────────────────

@@ -540,3 +540,34 @@ describe('연간·분기·월간 열 선택 (엑셀)', () => {
     expect(total.length).toBeGreaterThan(0);
   });
 });
+
+describe('캘린더 구독 주소', () => {
+  it('만들기 → 로그인 없이 열림(학생용 내용) → 폐기하면 404, 복제본에는 따라가지 않음', async () => {
+    const p = (await asTeacher({ method: 'POST', url: '/api/plans', payload: { curriculumId: SAMPLE_IDS.curriculumParallel, settings } })).json();
+    const made = await asTeacher({ method: 'POST', url: `/api/plans/${p.id}/calendar-feeds`, payload: { audience: 'student', label: '학부모', version: p.version } });
+    expect(made.statusCode).toBe(200);
+    const feed = made.json().calendarFeeds[0];
+    expect(feed.token).toMatch(/^[A-Za-z0-9_-]{32}$/);
+    // 로그인 쿠키 없이 연다
+    const open = await app.inject({ method: 'GET', url: `/api/feeds/${feed.token}.ics` });
+    expect(open.statusCode).toBe(200);
+    expect(open.headers['content-type']).toContain('text/calendar');
+    expect(open.body).toContain('BEGIN:VEVENT');
+    expect(open.body).not.toContain('지도 메모');
+    // 추측한 주소·형식이 틀린 주소는 404
+    expect((await app.inject({ method: 'GET', url: '/api/feeds/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA.ics' })).statusCode).toBe(404);
+    expect((await app.inject({ method: 'GET', url: '/api/feeds/short.ics' })).statusCode).toBe(404);
+    // 복제본에는 구독 주소가 없다
+    const clone = (await asTeacher({ method: 'POST', url: `/api/plans/${p.id}/clone` })).json();
+    expect(clone.calendarFeeds ?? []).toHaveLength(0);
+    // 폐기
+    const rev = await asTeacher({ method: 'POST', url: `/api/plans/${p.id}/calendar-feeds/revoke`, payload: { token: feed.token, version: made.json().version } });
+    expect(rev.statusCode).toBe(200);
+    expect((await app.inject({ method: 'GET', url: `/api/feeds/${feed.token}.ics` })).statusCode).toBe(404);
+  });
+
+  it('계획에 접근할 수 없는 강사는 구독 주소를 만들 수 없다', async () => {
+    const p = (await asAdmin({ method: 'POST', url: '/api/plans', payload: { curriculumId: SAMPLE_IDS.curriculumBasic, settings } })).json();
+    expect((await asTeacher({ method: 'POST', url: `/api/plans/${p.id}/calendar-feeds`, payload: { audience: 'teacher', version: p.version } })).statusCode).toBe(403);
+  });
+});
