@@ -329,6 +329,25 @@ describe('실행 계획', () => {
   });
 });
 
+describe('동시 편집 알림용 버전 조회', () => {
+  it('교재 버전과 마지막 수정자를 돌려주고, 수정되면 버전이 오른다', async () => {
+    const v1 = (await asTeacher({ method: 'GET', url: `/api/versions/textbook/${SAMPLE_IDS.inhouseTextbook}` })).json();
+    expect(v1.version).toBeGreaterThanOrEqual(1);
+    const tb = (await asAdmin({ method: 'GET', url: `/api/textbooks/${SAMPLE_IDS.inhouseTextbook}` })).json();
+    await asAdmin({ method: 'PUT', url: `/api/textbooks/${SAMPLE_IDS.inhouseTextbook}`, payload: { ...tb, usageNote: tb.usageNote + '!' } });
+    const v2 = (await asTeacher({ method: 'GET', url: `/api/versions/textbook/${SAMPLE_IDS.inhouseTextbook}` })).json();
+    expect(v2.version).toBe(v1.version + 1);
+    expect(v2.updatedByName).toBe('관리자');
+  });
+
+  it('지원하지 않는 종류는 400, 접근 권한 없는 계획은 403', async () => {
+    expect((await asTeacher({ method: 'GET', url: '/api/versions/user/x' })).statusCode).toBe(400);
+    const p = (await asAdmin({ method: 'POST', url: '/api/plans', payload: { curriculumId: SAMPLE_IDS.curriculumBasic, settings } })).json();
+    expect((await asTeacher({ method: 'GET', url: `/api/versions/plan/${p.id}` })).statusCode).toBe(403);
+    expect((await asAdmin({ method: 'GET', url: `/api/versions/plan/${p.id}` })).statusCode).toBe(200);
+  });
+});
+
 describe('보안·실제 소요시간', () => {
   it('같은 IP·아이디로 10회 실패하면 429로 잠기고, 다른 아이디는 영향받지 않는다', async () => {
     for (let i = 0; i < 10; i++) {

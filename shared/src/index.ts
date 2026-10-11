@@ -11,3 +11,4 @@ export * from './assembler.ts';
 export * from './sample.ts';
 export * from './output.ts';
 export * from './timing.ts';
+export * from './toc.ts';

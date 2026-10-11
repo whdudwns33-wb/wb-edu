@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import type { Activity, Curriculum, CurriculumSession, LearningObjective, SessionEntry, Textbook, Track } from '@wb/shared';
 import { ACTIVITY_LABEL, ADVANCE_TYPE_LABEL, COMPOSITION_LABEL, TRACK_LABEL, curriculumTotals, fmtMinutes, mergeEntries, moveEntry, rangeLabel, renumber, sessionMinutes, splitEntry } from '@wb/shared';
 import { get, post, put, errorMessage } from '../api.ts';
+import { RemoteChangeBanner, useRemoteVersion } from '../components/RemoteChange.tsx';
 import { useAuth } from '../auth.tsx';
 import { Alert, Badge, Empty, Field, Loading, Modal, SampleBadge, useAsync } from '../components/ui.tsx';
 
@@ -99,9 +100,23 @@ export function CurriculumEditorPage() {
   const [comment, setComment] = useState('');
   const { data: textbooks } = useAsync(() => get<Textbook[]>('/api/textbooks'), []);
   const { data: objectives } = useAsync(() => get<LearningObjective[]>('/api/objectives'), []);
+  const [baseline, setBaseline] = useState('');
+  const loaded = (c: Curriculum) => {
+    setDoc(c);
+    setBaseline(JSON.stringify(c));
+  };
+  const remote = useRemoteVersion('curriculum', isNew ? undefined : id, doc?.version);
+  const reloadLatest = () =>
+    get<Curriculum>(`/api/curricula/${id}`)
+      .then(loaded)
+      .then(() => {
+        setError('');
+        setMsg('최신 버전을 불러왔습니다.');
+      })
+      .catch((e) => setError(errorMessage(e)));
 
   useEffect(() => {
-    if (!isNew && id) get<Curriculum>(`/api/curricula/${id}`).then(setDoc).catch((e) => setError(errorMessage(e)));
+    if (!isNew && id) get<Curriculum>(`/api/curricula/${id}`).then(loaded).catch((e) => setError(errorMessage(e)));
   }, [id, isNew]);
 
   const tbMap = useMemo(() => new Map((textbooks ?? []).map((t) => [t.id, t])), [textbooks]);
@@ -119,7 +134,7 @@ export function CurriculumEditorPage() {
     setMsg('');
     try {
       const saved = isNew ? await post<Curriculum>('/api/curricula', doc) : await put<Curriculum>(`/api/curricula/${doc.id}`, doc);
-      setDoc(saved);
+      loaded(saved);
       setMsg(`저장했습니다. (과정 v${saved.curriculumVersion}, ${STATUS[saved.status].label})`);
       if (isNew) nav(`/curricula/${saved.id}`, { replace: true });
     } catch (e) {
@@ -273,7 +288,7 @@ export function CurriculumEditorPage() {
           {!readOnly && !isNew && (
             <>
               <button onClick={async () => nav(`/curricula/${(await post<Curriculum>(`/api/curricula/${doc.id}/clone`)).id}`)}>복제</button>
-              <button onClick={async () => setDoc(await post<Curriculum>(`/api/curricula/${doc.id}/publish`))} title="검증 완료로 표시하고 과정 버전을 올립니다">
+              <button onClick={async () => loaded(await post<Curriculum>(`/api/curricula/${doc.id}/publish`))} title="검증 완료로 표시하고 과정 버전을 올립니다">
                 검증 완료·새 버전 발행
               </button>
             </>
@@ -286,6 +301,7 @@ export function CurriculumEditorPage() {
         </div>
       </div>
       {error && <Alert kind="danger">{error}</Alert>}
+      <RemoteChangeBanner remote={remote} localVersion={doc.version} dirty={!!baseline && JSON.stringify(doc) !== baseline} onReload={reloadLatest} />
       {msg && <Alert kind="ok">{msg}</Alert>}
       {readOnly && <Alert kind="info">표준과정은 관리자만 수정할 수 있습니다. 검토 의견은 남길 수 있습니다.</Alert>}
 
@@ -703,7 +719,7 @@ export function CurriculumEditorPage() {
             <button
               onClick={async () => {
                 try {
-                  setDoc(await post<Curriculum>(`/api/curricula/${doc.id}/comments`, { text: comment }));
+                  loaded(await post<Curriculum>(`/api/curricula/${doc.id}/comments`, { text: comment }));
                   setComment('');
                 } catch (e) {
                   setError(errorMessage(e));

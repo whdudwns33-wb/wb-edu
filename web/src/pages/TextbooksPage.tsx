@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import type { AppSettings, ImportPreview, LearningItem, LearningObjective, ProgressUnit, Textbook, TimingSuggestion } from '@wb/shared';
-import { PROGRESS_UNIT_LABEL, isRangedUnit, itemQuantity } from '@wb/shared';
+import { PROGRESS_UNIT_LABEL, isRangedUnit, itemQuantity, parseToc } from '@wb/shared';
+import { extractPdfLines } from '../pdfText.ts';
+import { RemoteChangeBanner, useRemoteVersion } from '../components/RemoteChange.tsx';
 import { get, post, put, errorMessage } from '../api.ts';
 import { useAuth } from '../auth.tsx';
 import { Alert, Badge, Empty, Field, Loading, Modal, SampleBadge, useAsync } from '../components/ui.tsx';
@@ -126,9 +128,24 @@ export function TextbookEditorPage() {
   const { data: settings } = useAsync(() => get<AppSettings>('/api/settings'), []);
   const { data: objectives } = useAsync(() => get<LearningObjective[]>('/api/objectives'), []);
   const readOnly = user?.role !== 'admin';
+  // 마지막으로 불러오거나 저장한 상태 (편집 중인지 판단용)
+  const [baseline, setBaseline] = useState('');
+  const loaded = (t: Textbook) => {
+    setDoc(t);
+    setBaseline(JSON.stringify(t));
+  };
+  const remote = useRemoteVersion('textbook', isNew ? undefined : id, doc?.version);
+  const reloadLatest = () =>
+    get<Textbook>(`/api/textbooks/${id}`)
+      .then(loaded)
+      .then(() => {
+        setError('');
+        setMsg('최신 버전을 불러왔습니다.');
+      })
+      .catch((e) => setError(errorMessage(e)));
 
   useEffect(() => {
-    if (!isNew && id) get<Textbook>(`/api/textbooks/${id}`).then(setDoc).catch((e) => setError(errorMessage(e)));
+    if (!isNew && id) get<Textbook>(`/api/textbooks/${id}`).then(loaded).catch((e) => setError(errorMessage(e)));
   }, [id, isNew]);
 
   const subjectFields = useMemo(() => {
@@ -153,7 +170,7 @@ export function TextbookEditorPage() {
     try {
       const payload = { ...doc, items: doc.items.map((it, i) => ({ ...it, order: it.order || i + 1 })) };
       const saved = isNew ? await post<Textbook>('/api/textbooks', payload) : await put<Textbook>(`/api/textbooks/${doc.id}`, payload);
-      setDoc(saved);
+      loaded(saved);
       setMsg('저장했습니다.');
       if (isNew) nav(`/textbooks/${saved.id}`, { replace: true });
     } catch (e) {
@@ -173,8 +190,9 @@ export function TextbookEditorPage() {
   };
   const archive = async (archived: boolean) => {
     const saved = await post<Textbook>(`/api/textbooks/${doc.id}/archive`, { archived });
-    setDoc(saved);
+    loaded(saved);
   };
+  const dirty = !!baseline && JSON.stringify(doc) !== baseline;
 
   return (
     <>
@@ -190,10 +208,10 @@ export function TextbookEditorPage() {
             <>
               <button onClick={clone}>복제</button>
               <button onClick={() => archive(!doc.archived)}>{doc.archived ? '보관 해제' : '보관'}</button>
-              <button onClick={() => setImportOpen(true)}>표·엑셀 붙여넣기</button>
+              <button onClick={() => setImportOpen(true)}>표·목차·PDF 가져오기</button>
             </>
           )}
-          {!readOnly && isNew && <button onClick={() => setImportOpen(true)}>표·엑셀 붙여넣기</button>}
+          {!readOnly && isNew && <button onClick={() => setImportOpen(true)}>표·목차·PDF 가져오기</button>}
           {!readOnly && (
             <button className="primary" disabled={busy} onClick={save}>
               저장 {doc.version ? `(v${doc.version})` : ''}
@@ -206,13 +224,14 @@ export function TextbookEditorPage() {
           {error}
           {error.includes('먼저 수정') && (
             <div>
-              <button className="sm" onClick={() => get<Textbook>(`/api/textbooks/${doc.id}`).then(setDoc).then(() => setError(''))}>
+              <button className="sm" onClick={reloadLatest}>
                 최신 버전 불러오기
               </button>
             </div>
           )}
         </Alert>
       )}
+      {!error && <RemoteChangeBanner remote={remote} localVersion={doc.version} dirty={dirty} onReload={reloadLatest} />}
       {msg && <Alert kind="ok">{msg}</Alert>}
       {readOnly && <Alert kind="info">교재는 관리자만 수정할 수 있습니다. (읽기 전용)</Alert>}
 
@@ -579,25 +598,96 @@ function TimingPanel({ textbookId, version, readOnly, onApply }: { textbookId: s
 }
 
 function ImportModal({ defaultUnit, onClose, onApply }: { defaultUnit: ProgressUnit; onClose: () => void; onApply: (items: LearningItem[], mode: 'append' | 'replace') => void }) {
+  const [source, setSource] = useState<'table' | 'toc'>('table');
   const [text, setText] = useState('');
   const [preview, setPreview] = useState<ImportPreview | null>(null);
   const [error, setError] = useState('');
   const [mode, setMode] = useState<'append' | 'replace'>('append');
+  const [lastPage, setLastPage] = useState('');
+  const [perPage, setPerPage] = useState('3');
+  const [pdfFrom, setPdfFrom] = useState('1');
+  const [pdfTo, setPdfTo] = useState('5');
+  const [pdfInfo, setPdfInfo] = useState('');
+  const [pdfBusy, setPdfBusy] = useState(false);
   const run = async () => {
     setError('');
     try {
-      setPreview(await post<ImportPreview>('/api/textbooks/import-preview', { text, defaultUnit }));
+      if (source === 'toc') {
+        setPreview(parseToc(text, { lastPage: Number(lastPage) || undefined, minutesPerPage: Number(perPage) || 3 }));
+      } else {
+        setPreview(await post<ImportPreview>('/api/textbooks/import-preview', { text, defaultUnit }));
+      }
     } catch (e) {
       setError(errorMessage(e));
     }
   };
+  const loadPdf = async (file: File | undefined) => {
+    if (!file) return;
+    setPdfBusy(true);
+    setError('');
+    setPdfInfo('');
+    try {
+      const r = await extractPdfLines(await file.arrayBuffer(), Number(pdfFrom) || 1, Number(pdfTo) || undefined);
+      setText(r.lines.join('\n'));
+      setPreview(null);
+      setPdfInfo(
+        `${file.name}: 전체 ${r.pageCount}쪽 중 ${pdfFrom}~${Math.min(Number(pdfTo) || r.pageCount, r.pageCount)}쪽에서 ${r.lines.length}줄을 읽었습니다.` +
+          (r.emptyPages.length ? ` 텍스트가 없는 페이지 ${r.emptyPages.join(', ')} (스캔본이면 목차를 직접 붙여 넣으세요).` : '') +
+          ' 목차가 아닌 줄은 지우고 미리보기를 누르세요.',
+      );
+    } catch (e) {
+      setError(`PDF를 읽지 못했습니다: ${errorMessage(e)}`);
+    } finally {
+      setPdfBusy(false);
+    }
+  };
   const hasErrors = preview?.issues.some((i) => i.level === 'error');
   return (
-    <Modal title="표·엑셀 붙여넣기 가져오기" onClose={onClose} wide>
-      <p className="muted small">
-        엑셀이나 표에서 복사해 붙여넣으세요. 머리글 예: <code>대단원 소단원 제목 목표 단위 시작 끝 수량 시간 난이도 분할 용도 준비물 메모</code>. 머리글이 없으면 <code>대단원, 소단원, 제목, 단위, 시작, 끝, 시간</code> 순서로 해석합니다.
-      </p>
-      <textarea rows={8} value={text} onChange={(e) => setText(e.target.value)} placeholder={'대단원\t소단원\t제목\t단위\t시작\t끝\t시간\n1단원\t1\t중심 문장 찾기\t쪽\t12\t23\t30'} />
+    <Modal title="학습항목 가져오기" onClose={onClose} wide>
+      <div className="row mb">
+        <label className="check">
+          <input type="radio" checked={source === 'table'} onChange={() => { setSource('table'); setPreview(null); }} /> 표·엑셀 붙여넣기
+        </label>
+        <label className="check">
+          <input type="radio" checked={source === 'toc'} onChange={() => { setSource('toc'); setPreview(null); }} /> 목차 텍스트·PDF
+        </label>
+      </div>
+      {source === 'table' ? (
+        <p className="muted small">
+          엑셀이나 표에서 복사해 붙여넣으세요. 머리글 예: <code>대단원 소단원 제목 목표 단위 시작 끝 수량 시간 난이도 분할 용도 준비물 메모</code>. 머리글이 없으면 <code>대단원, 소단원, 제목, 단위, 시작, 끝, 시간</code> 순서로 해석합니다.
+        </p>
+      ) : (
+        <>
+          <p className="muted small">
+            교재 목차를 붙여 넣거나, 텍스트가 들어 있는 교재 PDF에서 목차 페이지를 읽어 옵니다(파일은 이 브라우저 안에서만 읽고 서버로 보내지 않습니다). 각 줄 끝의 쪽번호로 범위를 만들고, 다음 항목 시작 쪽 − 1을 끝 쪽으로 씁니다. 결과는 미리보기에서 확인한 뒤에만 적용됩니다.
+          </p>
+          <div className="row">
+            <span className="small">PDF 목차 페이지</span>
+            <input type="number" min={1} style={{ width: 70 }} value={pdfFrom} onChange={(e) => setPdfFrom(e.target.value)} aria-label="PDF 시작 페이지" />~
+            <input type="number" min={1} style={{ width: 70 }} value={pdfTo} onChange={(e) => setPdfTo(e.target.value)} aria-label="PDF 끝 페이지" />
+            <input type="file" accept="application/pdf,.pdf" disabled={pdfBusy} onChange={(e) => loadPdf(e.target.files?.[0])} aria-label="교재 PDF 선택" />
+            {pdfBusy && <span className="small muted">읽는 중…</span>}
+          </div>
+          {pdfInfo && <Alert kind="info">{pdfInfo}</Alert>}
+          <div className="row mt">
+            <label className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <span>본문 마지막 쪽</span>
+              <input type="number" min={1} style={{ width: 80 }} value={lastPage} onChange={(e) => setLastPage(e.target.value)} placeholder="예: 107" />
+            </label>
+            <label className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <span>쪽당 예상 분</span>
+              <input type="number" min={1} style={{ width: 70 }} value={perPage} onChange={(e) => setPerPage(e.target.value)} />
+            </label>
+          </div>
+        </>
+      )}
+      <textarea
+        className="mt"
+        rows={8}
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        placeholder={source === 'table' ? '대단원\t소단원\t제목\t단위\t시작\t끝\t시간\n1단원\t1\t중심 문장 찾기\t쪽\t12\t23\t30' : '1단원 중심 생각\n  1. 중심 문장 찾기 ........ 12\n  2. 문단 요약하기 ........ 24\n2단원 설명하는 글\n  1. 설명 방법 파악하기 ... 36'}
+      />
       <div className="row mt">
         <button className="primary" onClick={run} disabled={!text.trim()}>
           미리보기

@@ -6,6 +6,7 @@ import { get, post, put, errorMessage } from '../api.ts';
 import { useAuth } from '../auth.tsx';
 import { Alert, Badge, Empty, Field, Loading, Modal, SampleBadge, Tabs, useAsync, usePrompt } from '../components/ui.tsx';
 import { RecordControls } from '../components/RecordControls.tsx';
+import { RemoteChangeBanner, useRemoteVersion } from '../components/RemoteChange.tsx';
 import { SettingsForm } from './PlanCreatePage.tsx';
 
 type PlanDoc = Plan & { blockers: string[]; overbooked: Array<{ date: string; used: number; available: number }> };
@@ -39,6 +40,7 @@ export function PlanDetailPage() {
   useEffect(() => {
     load();
   }, [load]);
+  const remote = useRemoteVersion('plan', id, plan?.version);
 
   const runOp = async (op: string, params: Record<string, unknown>, direct = false) => {
     if (!plan) return;
@@ -95,6 +97,14 @@ export function PlanDetailPage() {
         </div>
       </div>
       {error && <Alert kind="danger">{error}</Alert>}
+      <RemoteChangeBanner
+        remote={remote}
+        localVersion={plan.version}
+        onReload={() => {
+          setMsg('');
+          load();
+        }}
+      />
       {msg && <Alert kind="ok">{msg}</Alert>}
       {plan.blockers.map((b, i) => (
         <Alert key={i} kind="warn">

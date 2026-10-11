@@ -533,6 +533,17 @@ export function registerPlanRoutes(app: FastifyInstance, ctx: AppContext) {
     return { date, lessons: out };
   });
 
+  /** 동시 편집 알림용 가벼운 버전 조회 (교재·과정·계획) */
+  app.get('/api/versions/:kind/:id', async (req) => {
+    const user = requireUser(req);
+    const { kind, id } = req.params as { kind: string; id: string };
+    if (!['textbook', 'curriculum', 'plan'].includes(kind)) throw new HttpError(400, '지원하지 않는 종류입니다.');
+    const doc = store.mustGet<Plan>(kind as 'plan', id);
+    if (kind === 'plan') mustAccess(user, doc);
+    const by = store.getUser(doc.updatedBy);
+    return { version: doc.version, updatedAt: doc.updatedAt, updatedBy: doc.updatedBy, updatedByName: by?.displayName ?? '알 수 없음' };
+  });
+
   // dryRun 비교에 쓰는 보조 (현재 상태 요약)
   app.get('/api/plans/:id/state-summary', async (req) => {
     const user = requireUser(req);
