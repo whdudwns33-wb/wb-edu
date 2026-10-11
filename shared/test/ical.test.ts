@@ -56,6 +56,19 @@ describe('달력 파일(.ics) 내보내기', () => {
     expect(name).toBe('X-WR-CALNAME:병행 계획 · 초5 · A반');
   });
 
+  it('단독 \\r 줄바꿈과 제어 문자가 일정 줄을 깨뜨리지 않는다 (2차 리뷰)', () => {
+    const t2 = new Map(tb);
+    const m2 = structuredClone(market);
+    m2.items[0].teachingNote = '첫 줄\r둘째 줄\u0007\u0000끝';
+    t2.set(m2.id, m2);
+    const { plan } = makePlan(basic, t2, baseSettings());
+    const ics = planToIcal(plan);
+    // CRLF 외의 단독 CR·LF 나 제어 문자가 남지 않는다
+    expect(ics.replace(/\r\n/g, '')).not.toMatch(/[\r\n\u0000-\u0008\u000B-\u001F\u007F]/);
+    const desc = unfold(ics).find((l) => l.includes('지도 메모'))!;
+    expect(desc).toContain('지도 메모: 첫 줄\\n둘째 줄끝');
+  });
+
   it('줄 접기는 한글 글자를 자르지 않는다', () => {
     const long = 'SUMMARY:' + '가'.repeat(60);
     const folded = foldLine(long);

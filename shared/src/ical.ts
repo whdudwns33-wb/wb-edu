@@ -22,7 +22,17 @@ export interface IcalOptions {
 
 /** RFC 5545 TEXT 이스케이프 */
 function esc(s: string): string {
-  return s.replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\r?\n/g, '\\n');
+  return (
+    s
+      .replace(/\\/g, '\\\\')
+      .replace(/;/g, '\\;')
+      .replace(/,/g, '\\,')
+      // 줄바꿈은 \n 으로 (맥 방식의 단독 \r 도 포함)
+      .replace(/\r\n|\r|\n/g, '\\n')
+      // RFC 5545 TEXT 가 허용하지 않는 제어 문자는 지운다 (탭은 허용)
+      // eslint-disable-next-line no-control-regex
+      .replace(/[\u0000-\u0008\u000B-\u001F\u007F]/g, '')
+  );
 }
 
 /** 75옥텟 줄 접기 (UTF-8 바이트 기준, 다중 바이트 문자를 자르지 않음) */

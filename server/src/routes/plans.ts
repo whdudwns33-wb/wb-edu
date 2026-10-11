@@ -409,6 +409,19 @@ export function registerPlanRoutes(app: FastifyInstance, ctx: AppContext) {
     if (!['done', 'partial', 'not_done', 'excluded'].includes(status)) throw new HttpError(400, '상태 값이 올바르지 않습니다.');
     const lesson = existing.lessons.find((l) => l.id === a.lessonId);
     if (!lesson) throw new HttpError(409, '이 배정의 수업을 찾을 수 없습니다. 새로 고친 뒤 다시 기록하세요.');
+    // 자동 병합은 '내가 본 배정'과 '지금 배정'이 같을 때만 한다.
+    // 그사이 일정 재배치로 같은 배정 id 의 날짜·범위·시간이 바뀌었다면, 화면에서 본 것과 다른 수업에 기록이 붙으므로 거절한다.
+    if (merged) {
+      const ex = (r.expect ?? undefined) as { lessonId?: unknown; itemId?: unknown; from?: unknown; to?: unknown; minutes?: unknown } | undefined;
+      const same =
+        !!ex &&
+        ex.lessonId === a.lessonId &&
+        ex.itemId === a.itemId &&
+        (ex.from ?? null) === (a.portion?.from ?? null) &&
+        (ex.to ?? null) === (a.portion?.to ?? null) &&
+        ex.minutes === a.minutes;
+      if (!same) throw new HttpError(409, '다른 사용자가 그사이 이 배정의 날짜나 범위를 바꿨습니다. 새로 고쳐 바뀐 내용을 확인한 뒤 다시 기록하세요.');
+    }
     const cp = r.completedPortion as { from?: unknown; to?: unknown } | undefined;
     const at = ctx.now();
     const rec: ProgressRecord = {
@@ -441,11 +454,19 @@ export function registerPlanRoutes(app: FastifyInstance, ctx: AppContext) {
     const r = (req.body ?? {}) as Record<string, unknown>;
     const merged = typeof r.version === 'number' && r.version !== existing.version;
     const lesson = existing.lessons.find((l) => l.id === str(r.lessonId));
-    if (!lesson) throw new HttpError(400, '수업을 찾을 수 없습니다.');
+    if (!lesson) throw new HttpError(merged ? 409 : 400, merged ? '다른 사용자가 일정을 바꿔 이 수업이 없어졌습니다. 새로 고친 뒤 다시 기록하세요.' : '수업을 찾을 수 없습니다.');
+    if (lesson.status !== 'scheduled' && lesson.status !== 'makeup') throw new HttpError(409, '휴강·취소된 수업에는 이해 확인을 기록할 수 없습니다.');
     const result = str(r.result);
     if (!['confirmed', 'needs_review', 'not_confirmed'].includes(result)) throw new HttpError(400, '결과 값이 올바르지 않습니다.');
+    // 학습항목은 그 수업에 실제로 배정된 것이어야 하고, 교재·목표는 클라이언트 값이 아니라 배정·교재 스냅샷에서 가져온다
+    const itemId = str(r.itemId);
+    const asg = existing.assignments.find((x) => x.lessonId === lesson.id && x.itemId === itemId);
+    if (!asg) throw new HttpError(merged ? 409 : 400, '이 수업에 배정되지 않은 학습항목입니다. 새로 고친 뒤 다시 기록하세요.');
+    const item = existing.snapshot.textbooks.find((t) => t.id === asg.textbookId)?.items.find((i) => i.id === itemId);
+    const allowedObjectives = new Set(item?.objectiveIds ?? []);
+    const objectiveIds = arr<string>(r.objectiveIds).filter((o) => typeof o === 'string' && allowedObjectives.has(o));
     const at = ctx.now();
-    const chk: UnderstandingCheck = { id: genId(), lessonId: lesson.id, itemId: str(r.itemId), textbookId: str(r.textbookId), objectiveIds: arr<string>(r.objectiveIds), result: result as UnderstandingCheck['result'], note: str(r.note), checkedAt: at, checkedBy: user.id };
+    const chk: UnderstandingCheck = { id: genId(), lessonId: lesson.id, itemId, textbookId: asg.textbookId, objectiveIds, result: result as UnderstandingCheck['result'], note: str(r.note), checkedAt: at, checkedBy: user.id };
     const doc: Plan = touched({ ...existing, understandingChecks: [...existing.understandingChecks, chk] }, user, at);
     const savedChk = store.update('plan', doc, existing.version);
     if (bool(r.slim, false)) return { id: savedChk.id, version: savedChk.version, planVersion: savedChk.planVersion, checkId: chk.id, merged };
@@ -574,9 +595,14 @@ export function registerPlanRoutes(app: FastifyInstance, ctx: AppContext) {
     const file = (req.params as { file: string }).file;
     const token = file.endsWith('.ics') ? file.slice(0, -4) : file;
     if (!/^[A-Za-z0-9_-]{32}$/.test(token)) return reply.code(404).send({ error: 'Not found' });
-    const plan = store.list<Plan>('plan').find((p) => p.calendarFeeds?.some((f) => f.token === token));
+    const plan = store.listContaining<Plan>('plan', token).find((p) => p.calendarFeeds?.some((f) => f.token === token));
     const feed = plan?.calendarFeeds?.find((f) => f.token === token);
     if (!plan || !feed) return reply.code(404).send({ error: 'Not found' });
+    // 주소를 만든 사람이 비활성화됐거나 이 계획의 접근 권한을 잃었으면 그 주소도 더는 열리지 않는다
+    const creator = store.getUser(feed.createdBy);
+    if (!creator || !creator.active || !canAccessPlan({ id: creator.id, username: creator.username, displayName: creator.displayName, role: creator.role }, plan)) {
+      return reply.code(404).send({ error: 'Not found' });
+    }
     reply.header('Content-Type', 'text/calendar; charset=utf-8');
     reply.header('Cache-Control', 'no-store');
     return reply.send(planToIcal(plan, { audience: feed.audience }));
@@ -688,6 +714,8 @@ export function registerPlanRoutes(app: FastifyInstance, ctx: AppContext) {
     const version = expectVersion(req.body);
     const r = req.body as Record<string, unknown>;
     if (!existing.snapshot.advance) throw new HttpError(400, '선행 설정이 없는 계획입니다.');
+    // 확정된 계획의 스냅샷은 보존한다 (확정 해제 후 바꾸게 한다)
+    if (existing.status === 'confirmed') throw new HttpError(400, '확정된 계획입니다. 선행 기초 확인을 바꾸려면 먼저 확정을 해제하세요.');
     const confirmed = bool(r.confirmed, true);
     const note = str(r.note).trim();
     if (confirmed && !note) throw new HttpError(400, '확인 근거(예: 진단 결과, 이해 확인 기록)를 적어 주세요.');

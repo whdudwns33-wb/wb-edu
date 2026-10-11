@@ -92,6 +92,16 @@ export class Store {
     return rows.map((r) => JSON.parse(String((r as { data: string }).data)) as T);
   }
 
+  /**
+   * 본문(JSON)에 needle 문자열이 들어 있는 보관되지 않은 문서만 읽는다.
+   * 캘린더 구독처럼 로그인 없이 오는 요청이 계획 전체를 해석하지 않도록, SQLite 안에서 먼저 거른다.
+   * 결과는 후보일 뿐이므로 호출하는 쪽에서 정확히 다시 확인한다.
+   */
+  listContaining<T extends AuditMeta>(kind: DocKind, needle: string): T[] {
+    const rows = this.db.prepare('SELECT data FROM docs WHERE kind = ? AND archived = 0 AND instr(data, ?) > 0').all(kind, needle);
+    return rows.map((r) => JSON.parse(String((r as { data: string }).data)) as T);
+  }
+
   get<T extends AuditMeta>(kind: DocKind, id: string): T | null {
     const row = this.db.prepare('SELECT data FROM docs WHERE kind = ? AND id = ?').get(kind, id) as { data: string } | undefined;
     return row ? (JSON.parse(row.data) as T) : null;

@@ -157,3 +157,58 @@ describe('2단 목차 PDF', () => {
     expect(textItemsToLines(items)).toEqual(['Chapter 3 ........ 36', '1. 중심 문장 찾기 12']);
   });
 });
+
+describe('2차 리뷰에서 찾은 목차 인식 오류', () => {
+  const it2 = (str: string, x: number, y: number, width: number) => ({ str, transform: [1, 0, 0, 1, x, y], width });
+
+  it('제목 안의 띄어 쓴 숫자를 쪽번호로 붙이지 않는다 (점선 뒤에서만 붙임)', async () => {
+    const { normalizeOcrLine } = await import('../src/toc.ts');
+    expect(normalizeOcrLine('2. 분수의 덧셈 2 3')).toBe('2. 분수의 덧셈 2 3');
+    expect(normalizeOcrLine('2. 분수의 덧셈 ...... 2 3')).toBe('2. 분수의 덧셈 ........ 23');
+  });
+
+  it('대문자 한 글자 단어와 연도는 점선 찌꺼기로 지우지 않는다', async () => {
+    const { normalizeOcrLine } = await import('../src/toc.ts');
+    expect(normalizeOcrLine('1. 독해 Part A 12')).toBe('1. 독해 Part A 12');
+    expect(normalizeOcrLine('3단원 모의고사 2023 60')).toBe('3단원 모의고사 2023 60');
+    // 점선 찌꺼기는 여전히 고친다
+    expect(normalizeOcrLine('1. 중심 문장 찾기 Ce 12')).toBe('1. 중심 문장 찾기 ........ 12');
+    expect(normalizeOcrLine('1. 설명 방법 파악하기 20200 36')).toBe('1. 설명 방법 파악하기 ........ 36');
+    expect(normalizeOcrLine('1. 설명 방법 파악하기 2o0e 36')).toBe('1. 설명 방법 파악하기 ........ 36');
+  });
+
+  it("'PART 1', 'Chapter 3' 의 숫자를 쪽번호로 읽지 않는다", () => {
+    const { lines } = classifyTocLines('PART 1\n1. 중심 문장 찾기 12\nChapter 3\n2. 요약하기 24\nUnit 2 36');
+    expect(lines.map((l) => [l.kind, l.title, l.page])).toEqual([
+      ['heading', 'PART 1', undefined],
+      ['item', '1. 중심 문장 찾기', 12],
+      ['heading', 'Chapter 3', undefined],
+      ['item', '2. 요약하기', 24],
+      ['heading', 'Unit 2', 36],
+    ]);
+  });
+
+  it('같은 쪽에서 시작하는 두 항목은 범위가 겹치지 않게 앞 항목을 한 쪽으로 두고 경고한다', () => {
+    const p = parseToc('1. 개념 정리 12\n2. 확인 문제 12\n3. 응용 24', { lastPage: 30 });
+    expect(p.items.map((i) => i.range)).toEqual([{ from: 12, to: 12 }, { from: 12, to: 23 }, { from: 24, to: 30 }]);
+    expect(p.issues.some((x) => x.message.includes('같은 12쪽'))).toBe(true);
+  });
+
+  it("왼쪽 조각이 '1' 이나 'PART 1' 뿐이면 2단으로 나누지 않는다", () => {
+    const items = [
+      it2('PART 1', 72, 700, 40), it2('중심 생각 익히기', 300, 700, 90),
+      it2('1', 72, 680, 6), it2('중심 문장 찾기 ...... 12', 300, 680, 150),
+      it2('2', 72, 660, 6), it2('문단 요약하기 ...... 24', 300, 660, 150),
+    ];
+    expect(textItemsToLines(items)).toEqual(['PART 1 중심 생각 익히기', '1 중심 문장 찾기 ...... 12', '2 문단 요약하기 ...... 24']);
+  });
+
+  it('넓은 빈칸이 한 줄에만 있으면 2단으로 보지 않는다', () => {
+    const items = [
+      it2('1. 중심 문장 찾기 12', 72, 700, 110), it2('부록 해설', 400, 700, 60),
+      it2('2. 문단 요약하기 24', 72, 680, 110),
+      it2('3. 글의 구조 36', 72, 660, 100),
+    ];
+    expect(textItemsToLines(items)).toEqual(['1. 중심 문장 찾기 12 부록 해설', '2. 문단 요약하기 24', '3. 글의 구조 36']);
+  });
+});

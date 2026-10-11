@@ -50,8 +50,14 @@ export function classifyTocLines(text: string): { lines: TocLine[]; skipped: Arr
       if (!line) return;
       // 목차 제목 줄·쪽번호만 있는 줄은 무시
       if (/^(목\s*차|차\s*례|contents)$/i.test(line) || /^\d{1,4}$/.test(line)) return;
-      const m = PAGE_RE.exec(line);
-      const isHeading = HEADING_RE.test(line);
+      let m = PAGE_RE.exec(line);
+      const head = HEADING_RE.exec(line);
+      const isHeading = !!head;
+      // 'PART 1', 'Chapter 3', '제2장' 처럼 대단원 표시 안의 숫자를 쪽번호로 읽지 않는다
+      if (m && head) {
+        const pageStart = line.search(/\d{1,4}\s*(?:p|쪽|페이지)?\s*$/i);
+        if (pageStart < head[0].trimEnd().length) m = null;
+      }
       if (m && cleanTitle(m[1])) {
         lines.push({ kind: isHeading ? 'heading' : 'item', title: cleanTitle(m[1]), page: Number(m[2]), lineNo });
       } else if (isHeading) {
@@ -108,9 +114,15 @@ export function parseToc(text: string, opts: TocOptions = {}): ImportPreview {
       return;
     }
     if (l.page === undefined) return;
+    // 바로 다음 항목이 같은 쪽에서 시작하면 두 항목이 같은 범위를 겹쳐 시간이 두 번 잡히므로, 앞 항목은 그 한 쪽으로 둔다
+    const nextLine = effective.slice(idx + 1).find((x) => x.page !== undefined && x.lineNo !== l.lineNo);
+    const sharesStart = nextLine !== undefined && nextLine.page === l.page;
     const next = nextStartAfter(idx);
     let to: number;
-    if (next !== undefined) to = next - 1;
+    if (sharesStart) {
+      to = l.page;
+      issues.push({ row: l.lineNo, level: 'warning', message: `'${l.title}'과(와) 다음 항목이 같은 ${l.page}쪽에서 시작해 '${l.title}'을(를) ${l.page}쪽 한 쪽으로 두었습니다. 실제 범위를 확인하세요.` });
+    } else if (next !== undefined) to = next - 1;
     else if (opts.lastPage && opts.lastPage >= l.page) to = opts.lastPage;
     else {
       to = l.page;
@@ -192,7 +204,10 @@ export function textItemsToLines(items: Array<{ str: string; transform: number[]
         const gap = p.x - (prev.x + prev.w);
         const leftText = joinParts(cur);
         const rightStart = p.str.trim();
-        const looksLikeColumnBreak = gap >= minColumnGap && /\d{1,4}$/.test(leftText) && !/^[.·…‥_\-–—]/.test(rightStart) && !/^\d+$/.test(rightStart);
+        // 왼쪽 조각이 '제목 + 쪽번호' 꼴이어야 한다 ('1'이나 'PART 1' 처럼 숫자로 끝나는 머리말만으로는 단을 나누지 않음)
+        const leftLine = /[A-Za-z가-힣]/.test(leftText) ? classifyTocLines(leftText).lines[0] : undefined;
+        const leftIsEntry = leftLine?.page !== undefined;
+        const looksLikeColumnBreak = gap >= minColumnGap && leftIsEntry && /[A-Za-z가-힣]/.test(rightStart) && !/^[.·…‥_\-–—]/.test(rightStart);
         if (looksLikeColumnBreak) {
           segs.push([p]);
           continue;
@@ -204,7 +219,9 @@ export function textItemsToLines(items: Array<{ str: string; transform: number[]
   });
 
   const splitStarts = segRows.flatMap((segs) => segs.slice(1).map((s) => s[0].x));
-  if (splitStarts.length === 0) return segRows.map((segs) => joinParts(segs.flat())).filter(Boolean);
+  // 한 줄만 나뉘어 보이는 것은 우연(넓은 빈칸이 있는 제목)일 수 있으므로, 두 줄 이상에서 나뉠 때만 2단으로 본다
+  const splitRowCount = segRows.filter((segs) => segs.length > 1).length;
+  if (splitStarts.length === 0 || splitRowCount < 2) return rows.map((r) => joinParts([...r.parts].sort((a, b) => a.x - b.x))).filter(Boolean);
 
   // 오른쪽 단의 시작 x: 확실히 나뉜 조각들의 가장 왼쪽 시작점.
   // 이 경계를 모든 줄에 적용한다 (쪽번호 없는 대단원 줄도 두 단에 걸쳐 있을 수 있으므로).
@@ -227,15 +244,17 @@ export function normalizeOcrLine(s: string): string {
     .replace(/[|¦]/g, ' ')
     .replace(/[·•∙⋯…]+/g, '...')
     .replace(/(\.\s*){3,}/g, ' ........ ')
-    .replace(/(\d)\s+(?=\d\s*$)/g, '$1') // 줄 끝 '1 2' → '12'
+    // 점선 뒤 쪽번호가 '1 2'로 갈라져 읽힌 경우만 '12'로 붙인다 (제목 안의 '2 3' 같은 숫자는 건드리지 않음)
+    .replace(/(\.{3,}\s*)(\d)\s+(\d{1,3})\s*$/, '$1$2$3')
     .replace(/\s+/g, ' ')
     .trim();
   // 점선을 글자로 잘못 읽은 짧은 조각(예: 'Ce', 'ee', '--')이 한글 제목과 쪽번호 사이에 남으면 점선으로 바꾼다.
-  // 영어 제목의 실제 단어를 지우지 않도록 한글이 있는 줄에서, 3글자 이하 조각만 다룬다.
+  // 실제 단어('Part A', '1 B')를 지우지 않도록, 한글이 있는 줄에서 소문자나 문장부호가 섞인 2~3글자 조각만 다룬다.
   if (/[가-힣]/.test(out)) {
-    out = out.replace(/(?:\s+[A-Za-z.,:;'"`~\-_=]{1,3})+\s+(\d{1,4})$/, ' ........ $1');
-    // 점선이 숫자·o·e·c 덩어리로 읽힌 경우 (예: '파악하기 20200 36'): 한글 바로 뒤, 쪽번호 바로 앞의 3글자 이상 덩어리
-    out = out.replace(/([가-힣)])\s+[0-9oOeEcC.,:;'`~\-_]{3,}\s+(\d{1,4})$/, '$1 ........ $2');
+    out = out.replace(/(?:\s+(?=[A-Za-z.,:;'"`~\-_=]*[a-z.,:;'"`~\-_=])[A-Za-z.,:;'"`~\-_=]{2,3})+\s+(\d{1,4})$/, ' ........ $1');
+    // 점선이 숫자·o·e·c 덩어리로 읽힌 경우 (예: '파악하기 20200 36'): 한글 바로 뒤, 쪽번호 바로 앞의 덩어리.
+    // 제목의 연도('2023')를 지우지 않도록 숫자만이면 5자리 이상일 때만, 아니면 o·e·c·문장부호가 섞였을 때만 바꾼다.
+    out = out.replace(/([가-힣)])\s+(?:\d{5,}|(?=[0-9oOeEcC.,:;'`~\-_]*[oOeEcC.,:;'`~\-_])[0-9oOeEcC.,:;'`~\-_]{3,})\s+(\d{1,4})$/, '$1 ........ $2');
   }
   return out;
 }

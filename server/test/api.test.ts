@@ -370,6 +370,7 @@ describe('선행 보충 제안과 기초 확인 (시나리오 10)', () => {
 });
 
 describe('동시 기록 자동 병합과 달력 내보내기', () => {
+  const expectOf = (a: { lessonId: string; itemId: string; portion?: { from: number; to: number }; minutes: number }) => ({ lessonId: a.lessonId, itemId: a.itemId, from: a.portion?.from ?? null, to: a.portion?.to ?? null, minutes: a.minutes });
   it('두 사람이 같은 버전 화면에서 동시에 기록해도 둘 다 저장된다 (기록은 추가만 하므로 병합)', async () => {
     const p = (await asTeacher({ method: 'POST', url: '/api/plans', payload: { curriculumId: SAMPLE_IDS.curriculumParallel, settings } })).json();
     const [a1, a2] = p.assignments.filter((a: { lessonId: string }) => a.lessonId === p.lessons[0].id);
@@ -377,7 +378,7 @@ describe('동시 기록 자동 병합과 달력 내보내기', () => {
     expect(r1.statusCode).toBe(200);
     expect(r1.json().merged).toBe(false);
     // 관리자는 이전 버전 화면에서 기록 → 409 대신 병합
-    const r2 = await asAdmin({ method: 'POST', url: `/api/plans/${p.id}/records`, payload: { assignmentId: a2.id, status: 'partial', completedFraction: 0.5, version: p.version } });
+    const r2 = await asAdmin({ method: 'POST', url: `/api/plans/${p.id}/records`, payload: { assignmentId: a2.id, status: 'partial', completedFraction: 0.5, version: p.version, expect: expectOf(a2) } });
     expect(r2.statusCode).toBe(200);
     expect(r2.json().merged).toBe(true);
     expect(r2.json().records.map((x: { assignmentId: string }) => x.assignmentId).sort()).toEqual([a1.id, a2.id].sort());
@@ -391,6 +392,33 @@ describe('동시 기록 자동 병합과 달력 내보내기', () => {
     // 일정 변경 연산은 여전히 버전이 다르면 409 (덮어쓰기 방지)
     const op = await asTeacher({ method: 'POST', url: `/api/plans/${p.id}/ops`, payload: { op: 'postpone', params: { lessonId: p.lessons[3].id }, version: p.version } });
     expect(op.statusCode).toBe(409);
+  });
+
+  it('그사이 재편성으로 같은 배정의 날짜가 바뀌었으면 옛 화면의 기록을 병합하지 않는다 (2차 리뷰)', async () => {
+    const p = (await asTeacher({ method: 'POST', url: '/api/plans', payload: { curriculumId: SAMPLE_IDS.curriculumParallel, settings } })).json();
+    // 배정이 있는 수업 둘째 것의 배정을 화면에서 보고 있다
+    const taught = p.lessons.filter((l: { id: string }) => p.assignments.some((a: { lessonId: string }) => a.lessonId === l.id));
+    const seen = p.assignments.find((a: { lessonId: string }) => a.lessonId === taught[1].id);
+    // 다른 사람이 첫 수업을 미뤄 뒤 배정이 다음 수업으로 밀린다
+    const op = await asAdmin({ method: 'POST', url: `/api/plans/${p.id}/ops`, payload: { op: 'postpone', params: { lessonId: taught[0].id }, version: p.version } });
+    expect(op.statusCode).toBe(200);
+    const now = op.json().assignments.find((a: { id: string }) => a.id === seen.id);
+    const r = await asTeacher({ method: 'POST', url: `/api/plans/${p.id}/records`, payload: { assignmentId: seen.id, status: 'done', version: p.version, expect: expectOf(seen) } });
+    // 미루기는 배정 id 를 그대로 두고 다음 수업으로 옮긴다: 같은 id 지만 화면에서 본 날짜가 아니다
+    expect(now.id).toBe(seen.id);
+    expect(now.lessonId).not.toBe(seen.lessonId);
+    expect(r.statusCode).toBe(409);
+    expect(r.json().error).toContain('새로 고쳐');
+    // 그대로인 배정은 화면에서 본 내용이 같으므로 병합된다
+    const same = op.json().assignments.find((a: { id: string; lessonId: string }) => p.assignments.some((b: { id: string; lessonId: string }) => b.id === a.id && b.lessonId === a.lessonId));
+    if (same) {
+      const ok = await asTeacher({ method: 'POST', url: `/api/plans/${p.id}/records`, payload: { assignmentId: same.id, status: 'done', version: p.version, expect: expectOf(p.assignments.find((b: { id: string }) => b.id === same.id)) } });
+      expect(ok.statusCode).toBe(200);
+      expect(ok.json().merged).toBe(true);
+    }
+    // 화면에서 본 내용을 보내지 않은 옛 버전 기록도 병합하지 않는다
+    const noExpect = await asTeacher({ method: 'POST', url: `/api/plans/${p.id}/records`, payload: { assignmentId: op.json().assignments[0].id, status: 'done', version: p.version } });
+    expect(noExpect.statusCode).toBe(409);
   });
 
   it('캘린더 파일(.ics)을 내려받는다', async () => {
@@ -587,5 +615,58 @@ describe('기록 저장의 작은 응답 (휴대폰)', () => {
     expect(full.version).toBe(body.version);
     const c = await asTeacher({ method: 'POST', url: `/api/plans/${p.id}/checks`, payload: { lessonId: a.lessonId, itemId: a.itemId, textbookId: a.textbookId, objectiveIds: [], result: 'confirmed', version: body.version, slim: true } });
     expect(Object.keys(c.json()).sort()).toEqual(['checkId', 'id', 'merged', 'planVersion', 'version'].sort());
+  });
+});
+
+describe('2차 리뷰 결함 회귀 (서버)', () => {
+  it('구독 주소를 만든 사람이 비활성화되면 그 주소는 더 열리지 않는다', async () => {
+    const made = await asAdmin({ method: 'POST', url: '/api/users', payload: { username: 'feeduser', password: 'feeduser1234', displayName: '구독 테스트' } });
+    expect(made.statusCode).toBe(201);
+    const cookie = await login('feeduser', 'feeduser1234');
+    const asUser = (opts: Record<string, unknown>) => app.inject({ ...opts, headers: { cookie } } as never);
+    const p = (await asUser({ method: 'POST', url: '/api/plans', payload: { curriculumId: SAMPLE_IDS.curriculumParallel, settings } })).json();
+    const feed = (await asUser({ method: 'POST', url: `/api/plans/${p.id}/calendar-feeds`, payload: { audience: 'teacher', version: p.version } })).json().calendarFeeds[0];
+    expect((await app.inject({ method: 'GET', url: `/api/feeds/${feed.token}.ics` })).statusCode).toBe(200);
+    expect((await asAdmin({ method: 'PUT', url: `/api/users/${made.json().id}`, payload: { active: false } })).statusCode).toBe(200);
+    expect((await app.inject({ method: 'GET', url: `/api/feeds/${feed.token}.ics` })).statusCode).toBe(404);
+    // 다시 활성화하면 열린다 (주소 자체를 폐기한 것은 아님)
+    await asAdmin({ method: 'PUT', url: `/api/users/${made.json().id}`, payload: { active: true } });
+    expect((await app.inject({ method: 'GET', url: `/api/feeds/${feed.token}.ics` })).statusCode).toBe(200);
+    // 계획을 보관하면 404
+    const cur = (await asUser({ method: 'GET', url: `/api/plans/${p.id}` })).json();
+    const arch = await asUser({ method: 'PUT', url: `/api/plans/${p.id}`, payload: { archived: true, version: cur.version } });
+    expect(arch.statusCode).toBe(200);
+    expect((await app.inject({ method: 'GET', url: `/api/feeds/${feed.token}.ics` })).statusCode).toBe(404);
+  });
+
+  it('확정된 계획의 선행 기초 확인은 바꿀 수 없다', async () => {
+    const p = (await asTeacher({ method: 'POST', url: '/api/plans', payload: { curriculumId: SAMPLE_IDS.curriculumAdvance, settings: { ...settings, endDate: '2027-02-26' } } })).json();
+    const ok = (await asTeacher({ method: 'POST', url: `/api/plans/${p.id}/advance-confirm`, payload: { confirmed: true, note: '진단평가 90점', version: p.version } })).json();
+    // 미배정 범위는 제외 처리해 확정할 수 있게 한다
+    let cur = ok;
+    for (const u of ok.unassigned.filter((x: { reason: string }) => x.reason !== 'excluded')) {
+      cur = (await asTeacher({ method: 'POST', url: `/api/plans/${p.id}/ops`, payload: { op: 'exclude', params: { unassignedId: u.id, reason: '테스트: 다음 학기로' }, version: cur.version } })).json();
+    }
+    const conf = await asTeacher({ method: 'POST', url: `/api/plans/${p.id}/confirm`, payload: { version: cur.version } });
+    expect(conf.statusCode).toBe(200);
+    const res = await asTeacher({ method: 'POST', url: `/api/plans/${p.id}/advance-confirm`, payload: { confirmed: false, note: '', version: conf.json().version } });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toContain('확정');
+  });
+
+  it('이해 확인은 그 수업에 배정된 학습항목만 받고, 교재·목표는 서버가 정한다', async () => {
+    const p = (await asTeacher({ method: 'POST', url: '/api/plans', payload: { curriculumId: SAMPLE_IDS.curriculumParallel, settings } })).json();
+    const lesson = p.lessons.find((l: { id: string }) => p.assignments.some((a: { lessonId: string }) => a.lessonId === l.id));
+    const a = p.assignments.find((x: { lessonId: string }) => x.lessonId === lesson.id);
+    const other = p.assignments.find((x: { lessonId: string; itemId: string }) => x.lessonId !== lesson.id && x.itemId !== a.itemId);
+    // 다른 수업의 학습항목
+    const bad = await asTeacher({ method: 'POST', url: `/api/plans/${p.id}/checks`, payload: { lessonId: lesson.id, itemId: other.itemId, result: 'confirmed', version: p.version } });
+    expect(bad.statusCode).toBe(400);
+    // 교재 id·없는 목표를 꾸며 보내도 배정의 교재, 항목의 목표만 남는다
+    const ok = await asTeacher({ method: 'POST', url: `/api/plans/${p.id}/checks`, payload: { lessonId: lesson.id, itemId: a.itemId, textbookId: 'fake-tb', objectiveIds: ['fake-objective'], result: 'needs_review', version: p.version } });
+    expect(ok.statusCode).toBe(200);
+    const chk = ok.json().understandingChecks.at(-1);
+    expect(chk.textbookId).toBe(a.textbookId);
+    expect(chk.objectiveIds).not.toContain('fake-objective');
   });
 });

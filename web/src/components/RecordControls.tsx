@@ -30,7 +30,9 @@ export function RecordControls({ planId, version, view, onSaved, compact }: Prop
     setBusy(true);
     setError('');
     try {
-      await post(`/api/plans/${planId}/records`, { assignmentId: a.id, status, version, reason, note, ...extra, slim: true });
+      // expect: 화면에서 본 배정. 그사이 다른 사람이 바꿨다면 서버가 자동 병합하지 않고 알려 준다
+      const expect = { lessonId: a.lessonId, itemId: a.itemId, from: a.portion?.from ?? null, to: a.portion?.to ?? null, minutes: a.minutes };
+      await post(`/api/plans/${planId}/records`, { assignmentId: a.id, status, version, reason, note, ...extra, expect, slim: true });
       setMode('');
       onSaved();
     } catch (e) {
