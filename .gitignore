@@ -3,6 +3,8 @@ dist/
 server/data/*.sqlite
 server/data/*.sqlite-*
 server/data/exports/
+server/data/backups/
 *.log
 .DS_Store
 .env
+.env.prod

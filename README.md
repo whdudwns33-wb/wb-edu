@@ -51,14 +51,22 @@ npm run dev:server       # 서버 (tsx watch)
 npm run dev:web          # Vite 개발 서버 http://127.0.0.1:5173 (/api 는 3987로 프록시)
 ```
 
-운영 모드 — 별도 DB 파일 `server/data/wb-edu.sqlite` (샘플을 넣지 않습니다):
+운영 모드 — 별도 DB 파일 `server/data/wb-edu.sqlite` (샘플을 넣지 않습니다). `.env.prod.example`을 `.env.prod`로 복사해 관리자 비밀번호를 적은 뒤:
 
 ```bash
-WB_MODE=prod WB_ADMIN_USER=admin WB_ADMIN_PASSWORD='강한비밀번호' npm start
+npm run start:prod
 ```
 
-환경변수: `PORT`(기본 3987), `HOST`(기본 127.0.0.1), `WB_DB_PATH`(DB 경로 직접 지정), `WB_STATIC_DIR`(웹 빌드 경로), `WB_LOG=0`(로그 끄기).
-첫 실행 시 관리자가 없으면 초기 관리자 계정을 만들고 경고를 남깁니다. 로그인 후 **설정 → 내 계정**에서 비밀번호를 바꾸세요.
+첫 실행에서 `WB_ADMIN_PASSWORD`가 비어 있으면 기본 비밀번호로 관리자가 만들어지지 않도록 실행을 중단합니다.
+환경변수: `PORT`(기본 3987), `HOST`(기본 127.0.0.1), `WB_DB_PATH`(DB 경로 직접 지정), `WB_STATIC_DIR`(웹 빌드 경로), `WB_LOG=0`(로그 끄기), `WB_BACKUP_DIR`(백업 폴더).
+
+백업(`VACUUM INTO`로 일관된 사본, 기본 60개 보관):
+
+```bash
+npm run backup
+```
+
+시범 운영 절차는 [docs/시범운영-가이드.md](docs/시범운영-가이드.md), 피드백 기록은 [docs/시범운영-피드백.md](docs/시범운영-피드백.md), 교재 목차 붙여넣기 양식은 [docs/templates/학습항목-붙여넣기-양식.tsv](docs/templates/학습항목-붙여넣기-양식.tsv)를 보세요.
 
 ## 테스트
 
