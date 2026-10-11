@@ -21,6 +21,7 @@ export function RecordControls({ planId, version, view, onSaved, compact }: Prop
   const [fraction, setFraction] = useState(50);
   const [reason, setReason] = useState('');
   const [note, setNote] = useState('');
+  const [actual, setActual] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -56,7 +57,20 @@ export function RecordControls({ planId, version, view, onSaved, compact }: Prop
     <div className="stack" style={{ gap: 4 }}>
       {error && <Alert kind="danger">{error}</Alert>}
       <div className="row">
-        <button className="sm accent" disabled={busy} onClick={() => save('done')}>
+        {!isHw && (
+          <input
+            type="number"
+            min={1}
+            max={600}
+            inputMode="numeric"
+            placeholder={`실제 분(예상 ${a.minutes})`}
+            title="실제로 걸린 시간(선택). 쌓이면 교재 예상 시간 개선 제안에 쓰입니다."
+            style={{ width: 120 }}
+            value={actual}
+            onChange={(e) => setActual(e.target.value)}
+          />
+        )}
+        <button className="sm accent" disabled={busy} onClick={() => save('done', actual && Number(actual) > 0 ? { actualMinutes: Number(actual) } : {})}>
           완료
         </button>
         {!isHw && (

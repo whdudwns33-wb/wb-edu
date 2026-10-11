@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import type { AppSettings, ImportPreview, LearningItem, LearningObjective, ProgressUnit, Textbook } from '@wb/shared';
+import type { AppSettings, ImportPreview, LearningItem, LearningObjective, ProgressUnit, Textbook, TimingSuggestion } from '@wb/shared';
 import { PROGRESS_UNIT_LABEL, isRangedUnit, itemQuantity } from '@wb/shared';
 import { get, post, put, errorMessage } from '../api.ts';
 import { useAuth } from '../auth.tsx';
@@ -495,6 +495,14 @@ export function TextbookEditorPage() {
           </div>
         )}
       </div>
+      {!isNew && (
+        <TimingPanel
+          textbookId={doc.id}
+          version={doc.version}
+          readOnly={readOnly}
+          onApply={(itemId, minutes) => set({ items: doc.items.map((it) => (it.id === itemId ? { ...it, minutes, minutesSource: 'entered' } : it)) })}
+        />
+      )}
       {importOpen && (
         <ImportModal
           defaultUnit={doc.defaultUnit}
@@ -507,6 +515,66 @@ export function TextbookEditorPage() {
         />
       )}
     </>
+  );
+}
+
+function TimingPanel({ textbookId, version, readOnly, onApply }: { textbookId: string; version: number; readOnly: boolean; onApply: (itemId: string, minutes: number) => void }) {
+  const { data, loading } = useAsync(() => get<{ suggestions: TimingSuggestion[]; planCount: number; rule: string }>(`/api/textbooks/${textbookId}/time-suggestions`), [textbookId, version]);
+  const [applied, setApplied] = useState<Set<string>>(new Set());
+  if (loading || !data) return null;
+  return (
+    <div className="panel">
+      <h2>실제 소요시간 기반 개선 제안</h2>
+      <p className="muted small">{data.rule} 이 교재를 쓰는 계획 {data.planCount}개를 집계했습니다.</p>
+      {data.suggestions.length === 0 ? (
+        <p className="muted small">아직 실제 분이 입력된 완료 기록이 없습니다. 진도 기록에서 '완료' 옆에 실제 분을 적으면 쌓입니다.</p>
+      ) : (
+        <div className="table-wrap">
+          <table className="compact">
+            <thead>
+              <tr>
+                <th>학습항목</th>
+                <th className="num">현재(분)</th>
+                <th className="num">실제 중앙값</th>
+                <th className="num">기록</th>
+                <th>판단</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.suggestions.map((s) => (
+                <tr key={s.itemId}>
+                  <td>
+                    {s.title} <Badge kind={s.minutesSource === 'entered' ? 'ok' : 'warn'}>{s.minutesSource === 'entered' ? '입력' : '추정'}</Badge>
+                  </td>
+                  <td className="num">{s.currentMinutes}</td>
+                  <td className="num">{s.medianMinutes}</td>
+                  <td className="num" title={s.samples.map((x) => `${x.date} ${x.planTitle}: ${x.actualMinutes}분 (비율 ${Math.round(x.share * 100)}% → ${x.scaledMinutes}분)`).join('\n')}>
+                    {s.samples.length}
+                  </td>
+                  <td className="small">{s.reason}</td>
+                  <td>
+                    {s.suggestedMinutes !== null && !readOnly && (
+                      <button
+                        className="sm"
+                        disabled={applied.has(s.itemId)}
+                        onClick={() => {
+                          onApply(s.itemId, s.suggestedMinutes!);
+                          setApplied(new Set([...applied, s.itemId]));
+                        }}
+                      >
+                        {applied.has(s.itemId) ? '반영됨 (저장 필요)' : `${s.suggestedMinutes}분으로 반영`}
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <p className="muted small mt">교재 원본의 시간을 바꿔도 이미 만든 계획(스냅샷)은 바뀌지 않습니다. 반영 후 과정 새 버전을 발행하고 새 계획부터 적용하세요.</p>
+    </div>
   );
 }
 

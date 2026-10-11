@@ -467,6 +467,8 @@ export interface ProgressRecord {
   completedPortion?: ItemRange;
   /** 수량형 부분 완료 비율 */
   completedFraction?: number;
+  /** 실제로 걸린 시간(분, 선택). 교재 예상 소요시간 개선 제안에 쓴다 */
+  actualMinutes?: number;
   reason: string;
   note: string;
   recordedAt: ISODateTime;

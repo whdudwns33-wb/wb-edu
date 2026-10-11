@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../src/app.ts';
 import { seedAdmin, seedDemoTeacher, seedSamples } from '../src/seed.ts';
+import { resetLoginLimiter } from '../src/routes/users.ts';
 import { SAMPLE_IDS } from '@wb/shared';
 
 let app: FastifyInstance;
@@ -325,6 +326,39 @@ describe('실행 계획', () => {
   it('입력 검증: 요일 없음 → 400', async () => {
     const res = await asTeacher({ method: 'POST', url: '/api/plans', payload: { curriculumId: SAMPLE_IDS.curriculumBasic, settings: { ...settings, weekdays: [] } } });
     expect(res.statusCode).toBe(400);
+  });
+});
+
+describe('보안·실제 소요시간', () => {
+  it('같은 IP·아이디로 10회 실패하면 429로 잠기고, 다른 아이디는 영향받지 않는다', async () => {
+    for (let i = 0; i < 10; i++) {
+      const r = await app.inject({ method: 'POST', url: '/api/auth/login', payload: { username: 'locktest', password: 'x' } });
+      expect(r.statusCode).toBe(401);
+    }
+    const locked = await app.inject({ method: 'POST', url: '/api/auth/login', payload: { username: 'locktest', password: 'x' } });
+    expect(locked.statusCode).toBe(429);
+    expect(locked.json().error).toContain('잠겼습니다');
+    const other = await app.inject({ method: 'POST', url: '/api/auth/login', payload: { username: 'teacher', password: 'teacher1234' } });
+    expect(other.statusCode).toBe(200);
+    resetLoginLimiter();
+  });
+
+  it('완료 기록의 실제 분이 저장되고 교재 개선 제안에 집계된다', async () => {
+    const res = await asTeacher({ method: 'POST', url: '/api/plans', payload: { curriculumId: SAMPLE_IDS.curriculumBasic, settings } });
+    expect(res.statusCode).toBe(201);
+    let plan = res.json();
+    const a = plan.assignments.find((x: { textbookId: string; activity: string }) => x.textbookId === SAMPLE_IDS.marketTextbook && x.activity === 'new');
+    const rec = await asTeacher({ method: 'POST', url: `/api/plans/${plan.id}/records`, payload: { assignmentId: a.id, status: 'done', actualMinutes: 50, version: plan.version } });
+    expect(rec.statusCode).toBe(200);
+    plan = rec.json();
+    expect(plan.records.at(-1).actualMinutes).toBe(50);
+    const bad = await asTeacher({ method: 'POST', url: `/api/plans/${plan.id}/records`, payload: { assignmentId: a.id, status: 'done', actualMinutes: 9999, version: plan.version } });
+    expect(bad.json().records.at(-1).actualMinutes).toBeUndefined(); // 범위 밖 값은 무시
+    const sug = await asTeacher({ method: 'GET', url: `/api/textbooks/${SAMPLE_IDS.marketTextbook}/time-suggestions` });
+    expect(sug.statusCode).toBe(200);
+    const s = sug.json().suggestions.find((x: { itemId: string }) => x.itemId === a.itemId);
+    expect(s.samples.length).toBeGreaterThanOrEqual(1);
+    expect(s.suggestedMinutes).toBeNull(); // 1건뿐이라 제안 없음
   });
 });
 

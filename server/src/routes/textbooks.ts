@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
-import type { LearningItem, Textbook } from '@wb/shared';
-import { previewImport, isRangedUnit, PROGRESS_UNIT_LABEL } from '@wb/shared';
+import type { LearningItem, Plan, Textbook } from '@wb/shared';
+import { MIN_DIFF_RATIO, MIN_SAMPLES, previewImport, isRangedUnit, PROGRESS_UNIT_LABEL, timingSuggestions } from '@wb/shared';
 import type { AppContext } from '../context.ts';
 import { HttpError, arr, bool, expectVersion, genId, newMeta, num, requireAdmin, requireUser, str, touched } from '../context.ts';
 
@@ -158,6 +158,14 @@ export function registerTextbookRoutes(app: FastifyInstance, ctx: AppContext) {
     store.audit({ at, userId: user.id, kind: 'textbook', docId: doc.id, action: 'clone', detail: `from ${src.id}` });
     reply.code(201);
     return doc;
+  });
+
+  /** 실제 소요시간 기반 예상 시간 개선 제안 (모든 계획의 완료 기록 중 실제 분이 있는 것) */
+  app.get('/api/textbooks/:id/time-suggestions', async (req) => {
+    requireUser(req);
+    const tb = store.mustGet<Textbook>('textbook', (req.params as { id: string }).id);
+    const plans = store.list<Plan>('plan', { includeArchived: true }).filter((p) => p.snapshot.textbooks.some((t) => t.id === tb.id));
+    return { suggestions: timingSuggestions(tb.id, tb.items, plans), planCount: plans.length, rule: `완료 기록의 실제 분을 항목 전체 기준으로 환산한 중앙값. 기록 ${MIN_SAMPLES}건 이상이고 현재 값과 ${MIN_DIFF_RATIO * 100}% 이상 차이 날 때만 제안하며 자동 적용하지 않음.` };
   });
 
   /** 표 붙여넣기 미리보기 (저장하지 않음) */

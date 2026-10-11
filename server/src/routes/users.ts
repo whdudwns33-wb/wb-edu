@@ -8,6 +8,15 @@ export function toSessionUser(u: { id: string; username: string; displayName: st
   return { id: u.id, username: u.username, displayName: u.displayName, role: u.role };
 }
 
+/** 로그인 실패 제한: 같은 IP·아이디 조합으로 15분 안에 10회 실패하면 15분 동안 거부 */
+const LOGIN_MAX_FAILS = 10;
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const loginFails = new Map<string, { count: number; first: number; blockedUntil: number }>();
+
+export function resetLoginLimiter() {
+  loginFails.clear();
+}
+
 export function registerUserRoutes(app: FastifyInstance, ctx: AppContext) {
   const { store } = ctx;
 
@@ -15,10 +24,23 @@ export function registerUserRoutes(app: FastifyInstance, ctx: AppContext) {
     const r = (req.body ?? {}) as Record<string, unknown>;
     const username = str(r.username).trim();
     const password = str(r.password);
+    const key = `${req.ip}|${username.toLowerCase()}`;
+    const now = Date.now();
+    const rec = loginFails.get(key);
+    if (rec && rec.blockedUntil > now) {
+      const min = Math.ceil((rec.blockedUntil - now) / 60000);
+      throw new HttpError(429, `로그인 실패가 많아 ${min}분 동안 잠겼습니다. 잠시 후 다시 시도하세요.`);
+    }
     const u = store.getUserByUsername(username);
     if (!u || !u.active || !verifyPassword(password, u.passwordHash)) {
+      const cur = rec && now - rec.first < LOGIN_WINDOW_MS ? rec : { count: 0, first: now, blockedUntil: 0 };
+      cur.count += 1;
+      if (cur.count >= LOGIN_MAX_FAILS) cur.blockedUntil = now + LOGIN_WINDOW_MS;
+      loginFails.set(key, cur);
+      store.audit({ at: ctx.now(), userId: '-', kind: 'auth', docId: username || '-', action: 'login_failed', detail: `${req.ip} (${cur.count}회)` });
       throw new HttpError(401, '아이디 또는 비밀번호가 올바르지 않습니다.');
     }
+    loginFails.delete(key);
     const token = newToken();
     store.createSession(token, u.id, SESSION_TTL_MS);
     reply.setCookie(SESSION_COOKIE, token, { path: '/', httpOnly: true, sameSite: 'lax', maxAge: SESSION_TTL_MS / 1000 });

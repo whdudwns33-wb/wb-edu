@@ -93,6 +93,8 @@ export function CurriculumEditorPage() {
   const [busy, setBusy] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
   const [mergeWith, setMergeWith] = useState<string | null>(null);
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [dropTarget, setDropTarget] = useState<string | null>(null);
   const [splitTarget, setSplitTarget] = useState<SessionEntry | null>(null);
   const [comment, setComment] = useState('');
   const { data: textbooks } = useAsync(() => get<Textbook[]>('/api/textbooks'), []);
@@ -159,6 +161,22 @@ export function CurriculumEditorPage() {
   const sel = selected ? findEntry(selected) : null;
   const updateEntry = (eid: string, patch: Partial<SessionEntry>) =>
     set({ sessions: doc.sessions.map((s) => ({ ...s, entries: s.entries.map((e) => (e.id === eid ? { ...e, ...patch } : e)) })), unassignedEntries: doc.unassignedEntries.map((e) => (e.id === eid ? { ...e, ...patch } : e)) });
+  /** 드래그 앤 드롭: 차시(특정 위치 앞) 또는 미배정(null)으로 이동. 같은 차시 안에서 뒤로 옮길 때는 제거 후 인덱스가 하나 당겨지는 것을 보정한다 */
+  const dropTo = (sessionId: string | null, beforeIndex?: number) => {
+    const id = dragId;
+    setDragId(null);
+    setDropTarget(null);
+    if (!id || readOnly) return;
+    let idx = beforeIndex;
+    if (sessionId && idx !== undefined) {
+      const s = doc.sessions.find((x) => x.id === sessionId);
+      const from = s?.entries.findIndex((e) => e.id === id) ?? -1;
+      if (from >= 0 && from < idx) idx -= 1;
+      if (from === idx) return;
+    }
+    setDoc(moveEntry(doc, id, sessionId, idx));
+    setSelected(id);
+  };
   const moveSel = (delta: number) => {
     if (!sel) return;
     const target = sel.sessionIdx + delta;
@@ -195,7 +213,22 @@ export function CurriculumEditorPage() {
     const it = itemOf(e);
     const tb = tbMap.get(e.textbookId);
     return (
-      <div className={`entry track-${e.track} ${e.activity === 'homework' ? 'hw' : ''} ${selected === e.id ? 'selected' : ''}`} onClick={() => !readOnly && setSelected(e.id)} role="button">
+      <div
+        className={`entry track-${e.track} ${e.activity === 'homework' ? 'hw' : ''} ${selected === e.id ? 'selected' : ''} ${dragId === e.id ? 'dragging' : ''}`}
+        onClick={() => !readOnly && setSelected(e.id)}
+        role="button"
+        draggable={!readOnly}
+        onDragStart={(ev) => {
+          ev.dataTransfer.effectAllowed = 'move';
+          ev.dataTransfer.setData('text/plain', e.id);
+          setDragId(e.id);
+        }}
+        onDragEnd={() => {
+          setDragId(null);
+          setDropTarget(null);
+        }}
+        title={readOnly ? '' : '끌어서 다른 차시나 미배정 목록으로 옮길 수 있습니다'}
+      >
         <div className="title">{it?.title ?? e.itemId}</div>
         <div className="muted">
           {tb?.title.replace(/^\[가상\]\s*/, '')} {it && e.portion ? rangeLabel(e.portion, it.progressUnit) : e.fraction !== undefined && e.fraction < 1 ? `${Math.round(e.fraction * 100)}%` : ''}
@@ -524,10 +557,34 @@ export function CurriculumEditorPage() {
                       </span>
                     )}
                   </div>
-                  <div className="body">
-                    {s.entries.map((e) => (
+                  <div
+                    className={`body ${dropTarget === s.id ? 'drop-over' : ''}`}
+                    onDragOver={(ev) => {
+                      if (readOnly || !dragId) return;
+                      ev.preventDefault();
+                      setDropTarget(s.id);
+                    }}
+                    onDragLeave={() => setDropTarget((t) => (t === s.id ? null : t))}
+                    onDrop={(ev) => {
+                      ev.preventDefault();
+                      dropTo(s.id);
+                    }}
+                  >
+                    {s.entries.map((e, idx) => (
                       <div
                         key={e.id}
+                        onDragOver={(ev) => {
+                          if (readOnly || !dragId || dragId === e.id) return;
+                          ev.preventDefault();
+                          ev.stopPropagation();
+                          setDropTarget(`${s.id}:${idx}`);
+                        }}
+                        onDrop={(ev) => {
+                          ev.preventDefault();
+                          ev.stopPropagation();
+                          dropTo(s.id, idx);
+                        }}
+                        className={dropTarget === `${s.id}:${idx}` ? 'drop-before' : ''}
                         onClick={() => {
                           if (mergeWith && mergeWith !== e.id) {
                             try {
@@ -552,15 +609,29 @@ export function CurriculumEditorPage() {
         <h3 className="mt">
           미배정 항목 <span className="muted small">{doc.unassignedEntries.length}건 · {fmtMinutes(totals.unassignedMinutes)}</span>
         </h3>
-        {doc.unassignedEntries.length === 0 ? (
-          <p className="muted small">없음</p>
-        ) : (
-          <div className="grid cols-4">
-            {doc.unassignedEntries.map((e) => (
-              <EntryCard key={e.id} e={e} inSession={false} />
-            ))}
-          </div>
-        )}
+        <div
+          className={`unassigned-drop ${dropTarget === 'unassigned' ? 'drop-over' : ''}`}
+          onDragOver={(ev) => {
+            if (readOnly || !dragId) return;
+            ev.preventDefault();
+            setDropTarget('unassigned');
+          }}
+          onDragLeave={() => setDropTarget((t) => (t === 'unassigned' ? null : t))}
+          onDrop={(ev) => {
+            ev.preventDefault();
+            dropTo(null);
+          }}
+        >
+          {doc.unassignedEntries.length === 0 ? (
+            <p className="muted small">없음{!readOnly ? ' · 카드를 여기로 끌어 놓으면 미배정으로 돌아갑니다' : ''}</p>
+          ) : (
+            <div className="grid cols-4">
+              {doc.unassignedEntries.map((e) => (
+                <EntryCard key={e.id} e={e} inSession={false} />
+              ))}
+            </div>
+          )}
+        </div>
       </div>
 
       <div className="panel">

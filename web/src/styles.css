@@ -131,6 +131,11 @@ table input, table select { padding: 4px 6px; font-size: 12px; width: 100%; }
 .entry.track-review { border-left: 3px solid var(--accent); }
 .entry.track-current { border-left: 3px solid var(--primary); }
 .entry.hw { background: #fffbeb; }
+.entry[draggable='true'] { cursor: grab; }
+.entry.dragging { opacity: 0.4; }
+.board .session .body.drop-over, .unassigned-drop.drop-over { background: var(--primary-soft); outline: 2px dashed var(--primary); outline-offset: -2px; }
+.drop-before { box-shadow: 0 -3px 0 var(--primary); }
+.unassigned-drop { min-height: 40px; border-radius: 6px; padding: 4px; }
 
 /* 일정 표 */
 .lesson-row.cancelled td, .lesson-row.holiday td { background: #f8f8f8; color: var(--muted); }

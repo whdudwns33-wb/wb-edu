@@ -394,6 +394,7 @@ export function registerPlanRoutes(app: FastifyInstance, ctx: AppContext) {
       status: status as ProgressRecord['status'],
       completedPortion: status === 'partial' && cp && typeof cp.from === 'number' && typeof cp.to === 'number' ? { from: cp.from, to: cp.to } : undefined,
       completedFraction: status === 'partial' && typeof r.completedFraction === 'number' ? Math.min(1, Math.max(0, r.completedFraction)) : undefined,
+      actualMinutes: typeof r.actualMinutes === 'number' && r.actualMinutes > 0 && r.actualMinutes <= 600 ? Math.round(r.actualMinutes) : undefined,
       reason: str(r.reason),
       note: str(r.note),
       recordedAt: at,
