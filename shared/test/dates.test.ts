@@ -81,3 +81,13 @@ describe('달력 날짜 계산', () => {
     expect(isISODate('2026-13-01')).toBe(false);
   });
 });
+
+describe('한국 시간 표시', () => {
+  it('저장된 UTC 시각을 한국 시간으로 보여 준다 (오전 9시 전에는 날짜도 다르다)', async () => {
+    const { formatKST } = await import('../src/dates.ts');
+    expect(formatKST('2026-10-12T23:30:00.000Z')).toBe('2026-10-13 08:30');
+    expect(formatKST('2026-10-12T23:30:00.000Z', false)).toBe('2026-10-13');
+    expect(formatKST('2026-10-13T05:00:00Z')).toBe('2026-10-13 14:00');
+    expect(formatKST(undefined)).toBe('');
+  });
+});

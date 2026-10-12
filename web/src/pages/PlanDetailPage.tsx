@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import type { DayView, HolidaySet, LearningObjective, MonthView, OutputTemplate, Plan, PlanSettings, PlanViews, QuarterView, TextbookProgress, User, WeekView, YearView } from '@wb/shared';
-import { OBJECTIVE_STATE_LABEL, UNASSIGNED_REASON_LABEL, assignmentViews, fmtMinutes, latestUndoableId, resolveColumns, todayKST, type ObjectiveStatus, type ScheduleDiff } from '@wb/shared';
+import { OBJECTIVE_STATE_LABEL, UNASSIGNED_REASON_LABEL, assignmentViews, fmtMinutes, formatKST, latestUndoableId, resolveColumns, todayKST, type ObjectiveStatus, type ScheduleDiff } from '@wb/shared';
 import { get, post, put, errorMessage } from '../api.ts';
 import { useAuth } from '../auth.tsx';
 import { Alert, Badge, Empty, Field, Loading, Modal, SampleBadge, Tabs, useAsync, usePrompt } from '../components/ui.tsx';
@@ -29,6 +29,7 @@ export function PlanDetailPage() {
   const [opPreview, setOpPreview] = useState<(OpPreview & { op: string; params: Record<string, unknown> }) | null>(null);
   const [metaOpen, setMetaOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [cloning, setCloning] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -84,7 +85,21 @@ export function PlanDetailPage() {
             목록
           </Link>
           <button onClick={() => setMetaOpen(true)}>기본 정보</button>
-          <button onClick={async () => { const c = await post<PlanDoc>(`/api/plans/${plan.id}/clone`); window.location.href = `/plans/${c.id}`; }} title="학생정보·완료 기록은 복제하지 않습니다">
+          <button
+            disabled={cloning}
+            onClick={async () => {
+              // 두 번 눌러 복제본이 둘 생기지 않게 하고, 실패하면 알린다
+              setCloning(true);
+              try {
+                const c = await post<PlanDoc>(`/api/plans/${plan.id}/clone`);
+                window.location.href = `/plans/${c.id}`;
+              } catch (e) {
+                setError(errorMessage(e));
+                setCloning(false);
+              }
+            }}
+            title="학생정보·완료 기록은 복제하지 않습니다"
+          >
             복제
           </button>
           {confirmed ? (
@@ -187,7 +202,7 @@ export function PlanDetailPage() {
 // ──────────────────────────────────────────────
 
 function ViewsTab({ plan, reload }: { plan: PlanDoc; reload: () => void }) {
-  const { data, loading, error } = useAsync(() => get<{ views: PlanViews; textbookProgress: TextbookProgress[] }>(`/api/plans/${plan.id}/views`), [plan.version]);
+  const { data, loading, error } = useAsync(() => get<{ views: PlanViews; textbookProgress: TextbookProgress[] }>(`/api/plans/${plan.id}/views`), [plan.id], [plan.version]);
   const [level, setLevel] = useState<Level>('month');
   const [sel, setSel] = useState<{ year?: number; quarter?: string; month?: string; week?: string; day?: string }>({});
   const today = todayKST();
@@ -826,6 +841,7 @@ function UnderstandingCheckForm({ plan, lessonId, reload }: { plan: PlanDoc; les
   const [result, setResult] = useState<'confirmed' | 'needs_review' | 'not_confirmed'>('confirmed');
   const [note, setNote] = useState('');
   const [err, setErr] = useState('');
+  const [saving, setSaving] = useState(false);
   const items = plan.assignments.filter((a) => a.lessonId === lessonId).map((a) => ({ a, item: plan.snapshot.textbooks.find((t) => t.id === a.textbookId)?.items.find((i) => i.id === a.itemId) }));
   const checks = plan.understandingChecks.filter((c) => c.lessonId === lessonId);
   return (
@@ -857,15 +873,20 @@ function UnderstandingCheckForm({ plan, lessonId, reload }: { plan: PlanDoc; les
           <input placeholder="메모" value={note} onChange={(e) => setNote(e.target.value)} />
           <button
             className="sm primary"
-            disabled={!itemId}
+            disabled={!itemId || saving}
             onClick={async () => {
               const it = items.find((x) => x.a.itemId === itemId);
+              // 저장 중에는 다시 누를 수 없게 한다 (자동 병합 때문에 두 번 누르면 같은 확인이 두 건 저장된다)
+              setSaving(true);
               try {
                 await post(`/api/plans/${plan.id}/checks`, { lessonId, itemId, textbookId: it?.a.textbookId, objectiveIds: it?.item?.objectiveIds ?? [], result, note, version: plan.version, slim: true });
                 setOpen(false);
+                setNote('');
                 reload();
               } catch (e) {
                 setErr(errorMessage(e));
+              } finally {
+                setSaving(false);
               }
             }}
           >
@@ -883,7 +904,7 @@ function UnderstandingCheckForm({ plan, lessonId, reload }: { plan: PlanDoc; les
 // ──────────────────────────────────────────────
 
 function ObjectivesTab({ plan, onPlan }: { plan: PlanDoc; onPlan: (p: PlanDoc) => void }) {
-  const { data, loading } = useAsync(() => get<{ statuses: ObjectiveStatus[]; advanceGaps: Array<{ objective: LearningObjective; reason: string }> }>(`/api/plans/${plan.id}/objectives`), [plan.version]);
+  const { data, loading } = useAsync(() => get<{ statuses: ObjectiveStatus[]; advanceGaps: Array<{ objective: LearningObjective; reason: string }> }>(`/api/plans/${plan.id}/objectives`), [plan.id], [plan.version]);
   if (loading || !data) return <Loading />;
   const kind: Record<string, string> = { planned: 'info', progressed: 'primary', confirmed: 'ok', unassigned: 'danger' };
   const missing = data.statuses.filter((s) => s.required && s.state === 'unassigned');
@@ -957,7 +978,7 @@ interface SupplementData {
 function SupplementPanel({ plan, onPlan }: { plan: PlanDoc; onPlan: (p: PlanDoc) => void }) {
   const { user } = useAuth();
   const nav = useNavigate();
-  const { data, loading, reload } = useAsync(() => get<SupplementData>(`/api/plans/${plan.id}/supplement`), [plan.version]);
+  const { data, loading, reload } = useAsync(() => get<SupplementData>(`/api/plans/${plan.id}/supplement`), [plan.id], [plan.version]);
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [note, setNote] = useState('');
   const [err, setErr] = useState('');
@@ -1009,7 +1030,7 @@ function SupplementPanel({ plan, onPlan }: { plan: PlanDoc; onPlan: (p: PlanDoc)
         기초 확인 상태:{' '}
         {adv.prerequisitesConfirmed ? (
           <Badge kind="ok">
-            확인됨 ({adv.prerequisitesConfirmedBy} · {adv.prerequisitesConfirmedAt?.slice(0, 10)})
+            확인됨 ({adv.prerequisitesConfirmedBy} · {formatKST(adv.prerequisitesConfirmedAt, false)})
           </Badge>
         ) : (
           <Badge kind="warn">미확인 · 확인 전에는 계획을 확정할 수 없습니다</Badge>
@@ -1105,13 +1126,13 @@ function SupplementPanel({ plan, onPlan }: { plan: PlanDoc; onPlan: (p: PlanDoc)
 
 function HistoryTab({ plan, runOp }: { plan: PlanDoc; runOp: (op: string, params: Record<string, unknown>, direct?: boolean) => void }) {
   const undoableId = latestUndoableId(plan);
-  const { data: audit } = useAsync(() => get<Array<{ at: string; userId: string; action: string; detail: string }>>(`/api/plans/${plan.id}/audit`), [plan.version]);
+  const { data: audit } = useAsync(() => get<Array<{ at: string; userId: string; action: string; detail: string }>>(`/api/plans/${plan.id}/audit`), [plan.id], [plan.version]);
   const { data: users } = useAsync(() => get<User[]>('/api/users').catch(() => [] as User[]), []);
   const name = (id: string) => users?.find((u) => u.id === id)?.displayName ?? id.slice(0, 8);
   return (
     <div className="panel">
       <h2>변경 이력 · 버전</h2>
-      <p className="muted small">계획 v{plan.planVersion} · 과정 {plan.snapshot.curriculumTitle} v{plan.snapshot.curriculumVersion} (스냅샷 {plan.snapshot.takenAt.slice(0, 10)}) · 교재 {plan.snapshot.textbooks.map((t) => `${t.title} ${t.edition} (v${t.textbookVersion})`).join(', ')}{plan.confirmedAt ? ` · 확정 ${plan.confirmedAt.slice(0, 10)}` : ''}</p>
+      <p className="muted small">계획 v{plan.planVersion} · 과정 {plan.snapshot.curriculumTitle} v{plan.snapshot.curriculumVersion} (스냅샷 {formatKST(plan.snapshot.takenAt, false)}) · 교재 {plan.snapshot.textbooks.map((t) => `${t.title} ${t.edition} (v${t.textbookVersion})`).join(', ')}{plan.confirmedAt ? ` · 확정 ${formatKST(plan.confirmedAt, false)}` : ''}</p>
       <div className="table-wrap">
         <table className="compact">
           <thead>
@@ -1125,7 +1146,7 @@ function HistoryTab({ plan, runOp }: { plan: PlanDoc; runOp: (op: string, params
           <tbody>
             {[...plan.history].reverse().map((h) => (
               <tr key={h.id} style={h.undone ? { opacity: 0.5, textDecoration: 'line-through' } : undefined}>
-                <td className="nowrap">{h.at.slice(0, 16).replace('T', ' ')}</td>
+                <td className="nowrap">{formatKST(h.at)}</td>
                 <td>{name(h.by)}</td>
                 <td>
                   <Badge>{h.action}</Badge> {h.description}
@@ -1148,7 +1169,7 @@ function HistoryTab({ plan, runOp }: { plan: PlanDoc; runOp: (op: string, params
           <ul className="small">
             {audit.map((a, i) => (
               <li key={i}>
-                {a.at.slice(0, 16).replace('T', ' ')} {name(a.userId)} {a.action} {a.detail}
+                {formatKST(a.at)} {name(a.userId)} {a.action} {a.detail}
               </li>
             ))}
           </ul>
@@ -1283,7 +1304,7 @@ function CalendarFeeds({ plan, onPlan }: { plan: PlanDoc; onPlan: (p: PlanDoc) =
                   <td className="small" style={{ wordBreak: 'break-all' }}>
                     <code>{urlOf(f.token)}</code>
                   </td>
-                  <td className="small nowrap">{f.createdAt.slice(0, 10)}</td>
+                  <td className="small nowrap">{formatKST(f.createdAt, false)}</td>
                   <td className="nowrap">
                     <button
                       className="sm"

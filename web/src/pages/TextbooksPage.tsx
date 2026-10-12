@@ -7,7 +7,7 @@ import { recognizeImages } from '../ocr.ts';
 import { RemoteChangeBanner, useRemoteVersion } from '../components/RemoteChange.tsx';
 import { get, post, put, errorMessage } from '../api.ts';
 import { useAuth } from '../auth.tsx';
-import { Alert, Badge, Empty, Field, Loading, Modal, SampleBadge, useAsync } from '../components/ui.tsx';
+import { Alert, Badge, Empty, Field, Loading, Modal, SampleBadge, useAsync, useUnsavedWarning } from '../components/ui.tsx';
 
 const VERIFY: Record<string, { label: string; kind: string }> = { unverified: { label: '미확인', kind: 'danger' }, reviewing: { label: '검토 중', kind: 'warn' }, verified: { label: '확인', kind: 'ok' } };
 
@@ -136,6 +136,7 @@ export function TextbookEditorPage() {
     setBaseline(JSON.stringify(t));
   };
   const remote = useRemoteVersion('textbook', isNew ? undefined : id, doc?.version);
+  useUnsavedWarning(!!doc && !!baseline && JSON.stringify(doc) !== baseline);
   const reloadLatest = () =>
     get<Textbook>(`/api/textbooks/${id}`)
       .then(loaded)
@@ -185,15 +186,29 @@ export function TextbookEditorPage() {
     }
   };
 
-  const clone = async () => {
-    const c = await post<Textbook>(`/api/textbooks/${doc.id}/clone`);
-    nav(`/textbooks/${c.id}`);
-  };
-  const archive = async (archived: boolean) => {
-    const saved = await post<Textbook>(`/api/textbooks/${doc.id}/archive`, { archived });
-    loaded(saved);
-  };
   const dirty = !!baseline && JSON.stringify(doc) !== baseline;
+  // 복제·보관은 저장된 내용을 대상으로 하므로, 고친 내용이 있으면 먼저 저장하게 한다 (화면의 편집이 말없이 사라지지 않게)
+  const runSaved = async (fn: () => Promise<void>) => {
+    setBusy(true);
+    setError('');
+    try {
+      await fn();
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const clone = () =>
+    runSaved(async () => {
+      const c = await post<Textbook>(`/api/textbooks/${doc.id}/clone`);
+      nav(`/textbooks/${c.id}`);
+    });
+  const archive = (archived: boolean) =>
+    runSaved(async () => {
+      loaded(await post<Textbook>(`/api/textbooks/${doc.id}/archive`, { archived }));
+    });
+  const needSave = dirty ? '고친 내용을 먼저 저장하세요' : undefined;
 
   return (
     <>
@@ -207,8 +222,12 @@ export function TextbookEditorPage() {
           </Link>
           {!readOnly && !isNew && (
             <>
-              <button onClick={clone}>복제</button>
-              <button onClick={() => archive(!doc.archived)}>{doc.archived ? '보관 해제' : '보관'}</button>
+              <button onClick={clone} disabled={busy || dirty} title={needSave}>
+                복제
+              </button>
+              <button onClick={() => archive(!doc.archived)} disabled={busy || dirty} title={needSave}>
+                {doc.archived ? '보관 해제' : '보관'}
+              </button>
               <button onClick={() => setImportOpen(true)}>표·목차·PDF 가져오기</button>
             </>
           )}
@@ -539,7 +558,7 @@ export function TextbookEditorPage() {
 }
 
 function TimingPanel({ textbookId, version, readOnly, onApply }: { textbookId: string; version: number; readOnly: boolean; onApply: (itemId: string, minutes: number) => void }) {
-  const { data, loading } = useAsync(() => get<{ suggestions: TimingSuggestion[]; planCount: number; rule: string }>(`/api/textbooks/${textbookId}/time-suggestions`), [textbookId, version]);
+  const { data, loading } = useAsync(() => get<{ suggestions: TimingSuggestion[]; planCount: number; rule: string }>(`/api/textbooks/${textbookId}/time-suggestions`), [textbookId], [version]);
   const [applied, setApplied] = useState<Set<string>>(new Set());
   if (loading || !data) return null;
   return (
@@ -691,7 +710,13 @@ function ImportModal({ defaultUnit, onClose, onApply }: { defaultUnit: ProgressU
             <span className="small">PDF 목차 페이지</span>
             <input type="number" min={1} style={{ width: 70 }} value={pdfFrom} onChange={(e) => setPdfFrom(e.target.value)} aria-label="PDF 시작 페이지" />~
             <input type="number" min={1} style={{ width: 70 }} value={pdfTo} onChange={(e) => setPdfTo(e.target.value)} aria-label="PDF 끝 페이지" />
-            <input type="file" accept="application/pdf,.pdf" disabled={pdfBusy} onChange={(e) => loadPdf(e.target.files?.[0])} aria-label="교재 PDF 선택" />
+            {/* 같은 파일을 다시 골라도(쪽 범위를 바꾼 뒤) 읽히도록 고른 뒤 값을 비운다 */}
+            <input type="file" accept="application/pdf,.pdf" disabled={pdfBusy} onChange={(e) => { loadPdf(e.target.files?.[0]); e.target.value = ''; }} aria-label="교재 PDF 선택" />
+            {pdfFile && (
+              <button className="sm" disabled={pdfBusy} onClick={() => loadPdf(pdfFile)} title="바꾼 쪽 범위로 같은 PDF를 다시 읽습니다">
+                이 범위로 다시 읽기
+              </button>
+            )}
             {pdfBusy && <span className="small muted">읽는 중…</span>}
           </div>
           {pdfInfo && <Alert kind="info">{pdfInfo}</Alert>}

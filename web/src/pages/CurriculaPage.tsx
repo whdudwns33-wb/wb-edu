@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import type { Activity, Curriculum, CurriculumSession, LearningObjective, SessionEntry, Textbook, Track } from '@wb/shared';
-import { ACTIVITY_LABEL, ADVANCE_TYPE_LABEL, COMPOSITION_LABEL, TRACK_LABEL, curriculumTotals, fmtMinutes, mergeEntries, moveEntry, rangeLabel, renumber, sessionMinutes, splitEntry } from '@wb/shared';
+import { ACTIVITY_LABEL, ADVANCE_TYPE_LABEL, COMPOSITION_LABEL, TRACK_LABEL, curriculumTotals, fmtMinutes, formatKST, mergeEntries, moveEntry, rangeLabel, renumber, sessionMinutes, splitEntry } from '@wb/shared';
 import { get, post, put, errorMessage } from '../api.ts';
 import { RemoteChangeBanner, useRemoteVersion } from '../components/RemoteChange.tsx';
 import { useAuth } from '../auth.tsx';
-import { Alert, Badge, Empty, Field, Loading, Modal, SampleBadge, useAsync } from '../components/ui.tsx';
+import { Alert, Badge, Empty, Field, Loading, Modal, SampleBadge, useAsync, useUnsavedWarning } from '../components/ui.tsx';
 
 type CurriculumRow = Curriculum & { totals: ReturnType<typeof curriculumTotals> };
 const STATUS: Record<string, { label: string; kind: string }> = { draft: { label: '초안', kind: 'warn' }, reviewing: { label: '검토 중', kind: 'info' }, verified: { label: '검증됨', kind: 'ok' } };
@@ -110,6 +110,7 @@ export function CurriculumEditorPage() {
     setBaseline(JSON.stringify(c));
   };
   const remote = useRemoteVersion('curriculum', isNew ? undefined : id, doc?.version);
+  useUnsavedWarning(!!doc && !!baseline && JSON.stringify(doc) !== baseline);
   const reloadLatest = () =>
     get<Curriculum>(`/api/curricula/${id}`)
       .then(loaded)
@@ -372,7 +373,22 @@ export function CurriculumEditorPage() {
           </Link>
           {!readOnly && !isNew && (
             <>
-              <button onClick={async () => nav(`/curricula/${(await post<Curriculum>(`/api/curricula/${doc.id}/clone`)).id}`)}>복제</button>
+              <button
+                disabled={busy || JSON.stringify(doc) !== baseline}
+                title={JSON.stringify(doc) !== baseline ? '고친 내용을 먼저 저장하세요 (복제는 저장된 내용을 복사합니다)' : '이 과정을 복사해 새 초안을 만듭니다'}
+                onClick={async () => {
+                  setBusy(true);
+                  try {
+                    nav(`/curricula/${(await post<Curriculum>(`/api/curricula/${doc.id}/clone`)).id}`);
+                  } catch (e) {
+                    setError(errorMessage(e));
+                  } finally {
+                    setBusy(false);
+                  }
+                }}
+              >
+                복제
+              </button>
               <button
                 disabled={JSON.stringify(doc) !== baseline}
                 onClick={async () => {
@@ -814,7 +830,7 @@ export function CurriculumEditorPage() {
               <label className="check">
                 <input type="checkbox" checked={doc.advance.prerequisitesConfirmed} disabled={readOnly} onChange={(e) => set({ advance: { ...doc.advance!, prerequisitesConfirmed: e.target.checked, prerequisitesConfirmedBy: e.target.checked ? user?.displayName : undefined, prerequisitesConfirmedAt: e.target.checked ? new Date().toISOString() : undefined } })} /> 담당자가 기초 개념을 확인했음
               </label>
-              {doc.advance.prerequisitesConfirmedBy && <small className="muted">{doc.advance.prerequisitesConfirmedBy} · {doc.advance.prerequisitesConfirmedAt?.slice(0, 10)}</small>}
+              {doc.advance.prerequisitesConfirmedBy && <small className="muted">{doc.advance.prerequisitesConfirmedBy} · {formatKST(doc.advance.prerequisitesConfirmedAt, false)}</small>}
               {!readOnly && (
                 <button className="sm mt" onClick={() => set({ advance: undefined })}>
                   선행 설정 제거
@@ -831,7 +847,7 @@ export function CurriculumEditorPage() {
           {doc.reviewComments.length === 0 && <p className="muted small">아직 의견이 없습니다.</p>}
           {doc.reviewComments.map((c) => (
             <div key={c.id} className="small" style={{ borderBottom: '1px solid var(--line)', padding: '4px 0' }}>
-              <strong>{c.by}</strong> <span className="muted">{c.at.slice(0, 16).replace('T', ' ')}</span>
+              <strong>{c.by}</strong> <span className="muted">{formatKST(c.at)}</span>
               <div>{c.text}</div>
             </div>
           ))}
@@ -840,7 +856,12 @@ export function CurriculumEditorPage() {
             <button
               onClick={async () => {
                 try {
-                  loaded(await post<Curriculum>(`/api/curricula/${doc.id}/comments`, { text: comment }));
+                  const server = await post<Curriculum>(`/api/curricula/${doc.id}/comments`, { text: comment });
+                  if (JSON.stringify(doc) !== baseline) {
+                    // 저장하지 않은 조립판 편집이 있으면 지우지 않고, 의견 목록과 버전만 받아 둔다 (나중에 저장해도 의견이 남는다)
+                    setDoc({ ...doc, reviewComments: server.reviewComments, version: server.version });
+                    setBaseline(JSON.stringify(server));
+                  } else loaded(server);
                   setComment('');
                 } catch (e) {
                   setError(errorMessage(e));

@@ -102,6 +102,23 @@ export function todayKST(now: Date = new Date()): ISODate {
   return f.format(now); // en-CA gives YYYY-MM-DD
 }
 
+/**
+ * 저장된 시각(UTC ISO 문자열)을 한국 시간으로 보여 준다: 'YYYY-MM-DD HH:mm' (withTime=false 면 날짜만).
+ * ISO 문자열을 그대로 잘라 쓰면 9시간 늦게 보이고, 오전 9시 전에는 날짜도 하루 전이 된다.
+ */
+export function formatKST(iso: string | undefined | null, withTime = true): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const p = Object.fromEntries(
+    new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
+      .formatToParts(d)
+      .map((x) => [x.type, x.value]),
+  );
+  const date = `${p.year}-${p.month}-${p.day}`;
+  return withTime ? `${date} ${p.hour}:${p.minute}` : date;
+}
+
 export function nowISO(): string {
   return new Date().toISOString();
 }

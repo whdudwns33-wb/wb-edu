@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
+import { formatKST } from '@wb/shared';
 import { get } from '../api.ts';
 import { Badge, Empty, Loading, SampleBadge, useAsync } from '../components/ui.tsx';
 
@@ -90,7 +91,7 @@ export function PlansListPage() {
                     <td>
                       <Badge kind={STATUS[p.archived ? 'archived' : p.status].kind}>{STATUS[p.archived ? 'archived' : p.status].label}</Badge>
                     </td>
-                    <td className="muted small hide-mobile">{p.updatedAt.slice(0, 16).replace('T', ' ')}</td>
+                    <td className="muted small hide-mobile">{formatKST(p.updatedAt)}</td>
                   </tr>
                 ))}
               </tbody>

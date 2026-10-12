@@ -71,7 +71,7 @@ function GeneralTab({ readOnly }: { readOnly: boolean }) {
       {s.subjectFields.map((sf, i) => (
         <div key={i} className="row mb">
           <input style={{ width: 90 }} value={sf.subject} disabled={readOnly} onChange={(e) => setS({ ...s, subjectFields: s.subjectFields.map((x, j) => (j === i ? { ...x, subject: e.target.value } : x)) })} />
-          <input style={{ flex: 1 }} value={sf.fields.map((f) => `${f.key}:${f.label}`).join(', ')} disabled={readOnly} onChange={(e) => setS({ ...s, subjectFields: s.subjectFields.map((x, j) => (j === i ? { ...x, fields: e.target.value.split(',').map((t) => t.trim()).filter(Boolean).map((t) => { const [key, label] = t.split(':'); return { key: key.trim(), label: (label ?? key).trim() }; }) } : x)) })} placeholder="key:라벨, key2:라벨2" />
+          <FieldListInput fields={sf.fields} disabled={readOnly} onChange={(fields) => setS({ ...s, subjectFields: s.subjectFields.map((x, j) => (j === i ? { ...x, fields } : x)) })} />
           {!readOnly && <button className="sm" onClick={() => setS({ ...s, subjectFields: s.subjectFields.filter((_, j) => j !== i) })}>×</button>}
         </div>
       ))}
@@ -359,5 +359,43 @@ function AccountTab() {
         </button>
       </div>
     </div>
+  );
+}
+
+/**
+ * 과목별 추가 열 입력 ('key:라벨, key2:라벨2').
+ * 글자를 칠 때마다 해석해 다시 쓰면 쉼표·띄어쓰기가 바로 지워져 입력할 수 없으므로,
+ * 입력 중에는 친 글자를 그대로 두고 칸을 벗어날 때 해석한다.
+ */
+function FieldListInput({ fields, disabled, onChange }: { fields: Array<{ key: string; label: string }>; disabled: boolean; onChange: (f: Array<{ key: string; label: string }>) => void }) {
+  const text = fields.map((f) => `${f.key}:${f.label}`).join(', ');
+  const [raw, setRaw] = useState(text);
+  const [editing, setEditing] = useState(false);
+  const parse = (v: string) =>
+    v
+      .split(',')
+      .map((t) => t.trim())
+      .filter(Boolean)
+      .map((t) => {
+        const [key, label] = t.split(':');
+        return { key: key.trim(), label: (label ?? key).trim() || key.trim() };
+      })
+      .filter((f) => f.key);
+  return (
+    <input
+      style={{ flex: 1 }}
+      value={editing ? raw : text}
+      disabled={disabled}
+      onFocus={() => {
+        setRaw(text);
+        setEditing(true);
+      }}
+      onChange={(e) => setRaw(e.target.value)}
+      onBlur={() => {
+        setEditing(false);
+        onChange(parse(raw));
+      }}
+      placeholder="key:라벨, key2:라벨2"
+    />
   );
 }

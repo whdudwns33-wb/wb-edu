@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 
 export function Badge({ kind = '', children }: { kind?: string; children: ReactNode }) {
   return <span className={`badge ${kind}`}>{children}</span>;
@@ -55,14 +55,27 @@ export function Tabs<T extends string>({ tabs, value, onChange }: { tabs: Array<
   );
 }
 
-export function useAsync<T>(fn: () => Promise<T>, deps: unknown[]): { data: T | null; error: string; loading: boolean; reload: () => void } {
+/**
+ * deps: 무엇을 불러오는지 정하는 값 (바뀌면 내용을 비우고 새로 불러온다)
+ * refresh: 같은 대상을 다시 불러오게만 하는 값 (예: 문서 버전. 바뀌어도 지금 내용을 보여 주며 새로 고친다)
+ */
+export function useAsync<T>(fn: () => Promise<T>, deps: unknown[], refresh: unknown[] = []): { data: T | null; error: string; loading: boolean; reload: () => void } {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const [tick, setTick] = useState(0);
+  const depsKey = useRef<string | null>(null);
   useEffect(() => {
     let alive = true;
-    setLoading(true);
+    // 같은 대상을 다시 불러올 때(reload)는 지금 내용을 그대로 보여 준다.
+    // 비우면 목록이 '불러오는 중'으로 바뀌어 스크롤 위치와 다른 카드에 입력 중인 값이 사라진다.
+    // 대상이 바뀌었을 때(deps 변경)만 비워 다른 대상의 내용으로 작업하지 않게 한다.
+    const key = JSON.stringify(deps);
+    if (depsKey.current !== key) {
+      depsKey.current = key;
+      setData(null);
+      setLoading(true);
+    }
     setError('');
     fn()
       .then((d) => alive && setData(d))
@@ -72,8 +85,38 @@ export function useAsync<T>(fn: () => Promise<T>, deps: unknown[]): { data: T | 
       alive = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [...deps, tick]);
+  }, [...deps, ...refresh, tick]);
   return { data, error, loading, reload: () => setTick((t) => t + 1) };
+}
+
+/**
+ * 저장하지 않은 변경이 있을 때 화면을 떠나면 확인한다.
+ *  - 새로 고침·창 닫기: 브라우저 기본 확인 (beforeunload)
+ *  - 앱 안의 링크(목록·메뉴): 누르기 전에 확인 (BrowserRouter 라 라우터 차단 기능 대신 클릭을 먼저 받는다)
+ */
+export function useUnsavedWarning(dirty: boolean, message = '저장하지 않은 변경이 있습니다. 이 화면을 떠나면 변경이 사라집니다. 떠날까요?') {
+  useEffect(() => {
+    if (!dirty) return;
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    const onClick = (e: MouseEvent) => {
+      const a = (e.target as HTMLElement | null)?.closest?.('a[href]') as HTMLAnchorElement | null;
+      if (!a || a.target === '_blank' || e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey) return;
+      if (a.origin !== window.location.origin || a.pathname === window.location.pathname) return;
+      if (!window.confirm(message)) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    document.addEventListener('click', onClick, true);
+    return () => {
+      window.removeEventListener('beforeunload', onBeforeUnload);
+      document.removeEventListener('click', onClick, true);
+    };
+  }, [dirty, message]);
 }
 
 export function Loading() {

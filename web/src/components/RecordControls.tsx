@@ -32,8 +32,13 @@ export function RecordControls({ planId, version, view, onSaved, compact }: Prop
     try {
       // expect: 화면에서 본 배정. 그사이 다른 사람이 바꿨다면 서버가 자동 병합하지 않고 알려 준다
       const expect = { lessonId: a.lessonId, itemId: a.itemId, from: a.portion?.from ?? null, to: a.portion?.to ?? null, minutes: a.minutes };
-      await post(`/api/plans/${planId}/records`, { assignmentId: a.id, status, version, reason, note, ...extra, expect, slim: true });
+      // 사유는 미진행·제외에만 보낸다 (다른 칸을 열었다 닫은 뒤 남은 사유가 완료 기록에 붙지 않게)
+      const why = status === 'excluded' || status === 'not_done' ? reason : '';
+      await post(`/api/plans/${planId}/records`, { assignmentId: a.id, status, version, reason: why, note, ...extra, expect, slim: true });
       setMode('');
+      setReason('');
+      setNote('');
+      setActual('');
       onSaved();
     } catch (e) {
       setError(errorMessage(e));

@@ -17,18 +17,26 @@ export function TodayPage() {
   const [msg, setMsg] = useState('');
   const [confirm, setConfirm] = useState<{ text: string; run: () => Promise<void> } | null>(null);
 
-  const quickOp = async (planId: string, version: number, op: string, params: Record<string, unknown>, label: string) => {
+  const quickOp = async (planId: string, _listVersion: number, op: string, params: Record<string, unknown>, label: string) => {
     try {
+      // 목록을 불러온 뒤 다른 기기의 기록 등으로 버전이 올랐을 수 있으므로, 미리보기 직전의 최신 버전으로 적용한다
+      const { version } = await get<{ version: number }>(`/api/versions/plan/${planId}`);
       const dry = await post<{ diff: { affectedLessonDates: string[]; unassignedMinutesAfter: number; unassignedMinutesBefore: number; endDateBefore: string; endDateAfter: string }; warnings: string[] }>(`/api/plans/${planId}/ops`, { op, params, dryRun: true });
       const d = dry.diff;
       const text = `${label}\n영향받는 수업 ${d.affectedLessonDates.length}회\n미배정 ${d.unassignedMinutesBefore}분 → ${d.unassignedMinutesAfter}분\n마지막 배정일 ${d.endDateBefore || '-'} → ${d.endDateAfter || '-'}${dry.warnings.length ? '\n' + dry.warnings.join('\n') : ''}`;
       setConfirm({
         text,
         run: async () => {
-          await post(`/api/plans/${planId}/ops`, { op, params, version });
-          setConfirm(null);
-          setMsg(`${label} 완료`);
-          reload();
+          try {
+            await post(`/api/plans/${planId}/ops`, { op, params, version });
+            setMsg(`${label} 완료`);
+          } catch (e) {
+            // 미리보기 뒤 다른 사람이 계획을 바꿨으면(409) 창을 닫고 새로 불러와 다시 시도하게 한다
+            setMsg(`${errorMessage(e)} 목록을 새로 불러왔습니다. 다시 시도하세요.`);
+          } finally {
+            setConfirm(null);
+            reload();
+          }
         },
       });
     } catch (e) {
