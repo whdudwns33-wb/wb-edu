@@ -3,7 +3,7 @@
  * 다섯 보기는 모두 같은 원본(plan.lessons / assignments / records)과
  * 같은 집계 함수(summarizeLessons)를 사용한다. 월을 걸치는 주는 실제 수업일 기준으로 센다.
  */
-import type { Activity, Assignment, ISODate, Lesson, Plan, ProgressRecord, Track } from './types.ts';
+import type { Activity, Assignment, ISODate, ItemRange, Lesson, Plan, ProgressRecord, ProgressUnit, Track } from './types.ts';
 import { ACTIVITY_LABEL, PROGRESS_UNIT_LABEL, RECORD_STATUS_LABEL, TRACK_LABEL } from './types.ts';
 import {
   academicQuarter,
@@ -20,7 +20,7 @@ import {
 } from './dates.ts';
 import { snapshotItemIndex } from './scheduler.ts';
 import { itemCompletion, latestRecordFor, assignmentPortion, recordCompleted } from './progress.ts';
-import { rangeLabel, subtractRanges, isRangedUnit } from './units.ts';
+import { rangeLabel, subtractRanges, isRangedUnit, normalizeRanges } from './units.ts';
 
 export type ViewLevel = 'year' | 'quarter' | 'month' | 'week' | 'day';
 
@@ -201,7 +201,9 @@ export function summarizeLessons(plan: Plan, lessons: Lesson[]): LessonSummary {
     s.bufferMinutes += l.bufferMinutes;
     s.fixedMinutes += l.fixedMinutes;
   }
-  const tbAgg = new Map<string, { minutes: number; ranges: Array<{ from: number; to: number }>; unit: string; titles: string[]; nonRanged: number }>();
+  // 교재·단위별로 모은다 (서로 다른 단위는 합치지 않는다). 새 학습 범위와 복습·연습·평가·과제 범위는 따로 보여 준다.
+  type Agg = { textbookId: string; minutes: number; unit: ProgressUnit | null; newRanges: ItemRange[]; otherRanges: Map<Activity, ItemRange[]>; newCount: number; otherCount: Map<Activity, number>; titles: string[] };
+  const tbAgg = new Map<string, Agg>();
   const dateOf = new Map(plan.lessons.map((l) => [l.id, l.date]));
   for (const a of plan.assignments) {
     if (!lessonIds.has(a.lessonId)) continue;
@@ -214,18 +216,17 @@ export function summarizeLessons(plan: Plan, lessons: Lesson[]): LessonSummary {
     if (a.activity === 'assessment') s.assessmentDates.push(dateOf.get(a.lessonId)!);
     if (a.activity === 'review') s.reviewDates.push(dateOf.get(a.lessonId)!);
     const info = items.get(a.itemId);
-    const key = a.textbookId;
-    const agg = tbAgg.get(key) ?? { minutes: 0, ranges: [], unit: '', titles: [], nonRanged: 0 };
+    const unit = info?.item.progressUnit ?? null;
+    const key = `${a.textbookId}|${unit ?? ''}`;
+    const agg: Agg = tbAgg.get(key) ?? { textbookId: a.textbookId, minutes: 0, unit, newRanges: [], otherRanges: new Map(), newCount: 0, otherCount: new Map(), titles: [] };
     agg.minutes += a.activity === 'homework' ? 0 : a.minutes;
     if (info) {
       const p = assignmentPortion(a, info.item);
-      if (p.range) {
-        agg.ranges.push(p.range);
-        agg.unit = PROGRESS_UNIT_LABEL[info.item.progressUnit];
-      } else {
-        agg.nonRanged += 1;
-        if (!agg.unit) agg.unit = PROGRESS_UNIT_LABEL[info.item.progressUnit];
-      }
+      if (a.activity === 'new') {
+        if (p.range) agg.newRanges.push(p.range);
+        else agg.newCount += 1;
+      } else if (p.range) agg.otherRanges.set(a.activity, [...(agg.otherRanges.get(a.activity) ?? []), p.range]);
+      else agg.otherCount.set(a.activity, (agg.otherCount.get(a.activity) ?? 0) + 1);
       if (!agg.titles.includes(info.item.title)) agg.titles.push(info.item.title);
     }
     tbAgg.set(key, agg);
@@ -233,17 +234,16 @@ export function summarizeLessons(plan: Plan, lessons: Lesson[]): LessonSummary {
     if (!rec) s.recorded.unrecorded++;
     else s.recorded[rec.status]++;
   }
-  s.textbooks = [...tbAgg.entries()].map(([id, agg]) => {
-    const sorted = [...agg.ranges].sort((x, y) => x.from - y.from);
-    let rangeText = '';
-    if (sorted.length) {
-      const first = sorted[0].from;
-      const last = Math.max(...sorted.map((r) => r.to));
-      rangeText = first === last ? `${first}${agg.unit}` : `${first}~${last}${agg.unit}`;
-    } else if (agg.nonRanged) {
-      rangeText = `${agg.nonRanged}${agg.unit || '항목'}`;
-    }
-    return { textbookId: id, title: tbTitle.get(id) ?? id, unit: agg.unit, rangeText, minutes: agg.minutes, itemTitles: agg.titles };
+  // 범위는 겹치지 않는 구간으로 합쳐 그대로 적는다 (12~23쪽, 36~47쪽). 처음~끝으로 합치면 사이의 빠진 쪽까지 포함된 것처럼 보인다.
+  const fmtRanges = (rs: ItemRange[], unit: ProgressUnit | null) => normalizeRanges(rs).map((r) => (unit ? rangeLabel(r, unit) : `${r.from}~${r.to}`)).join(', ');
+  const unitLabel = (unit: ProgressUnit | null) => (unit ? PROGRESS_UNIT_LABEL[unit] : '항목');
+  s.textbooks = [...tbAgg.values()].map((agg) => {
+    const parts: string[] = [];
+    if (agg.newRanges.length) parts.push(fmtRanges(agg.newRanges, agg.unit));
+    else if (agg.newCount) parts.push(`${agg.newCount}${unitLabel(agg.unit)}`);
+    for (const [act, rs] of agg.otherRanges) parts.push(`${ACTIVITY_LABEL[act]} ${fmtRanges(rs, agg.unit)}`);
+    for (const [act, n] of agg.otherCount) parts.push(`${ACTIVITY_LABEL[act]} ${n}${unitLabel(agg.unit)}`);
+    return { textbookId: agg.textbookId, title: tbTitle.get(agg.textbookId) ?? agg.textbookId, unit: unitLabel(agg.unit), rangeText: parts.join(' · '), minutes: agg.minutes, itemTitles: agg.titles };
   });
   s.assessmentDates = [...new Set(s.assessmentDates)].sort();
   s.reviewDates = [...new Set(s.reviewDates)].sort();
@@ -312,7 +312,8 @@ export function dayView(plan: Plan, lesson: Lesson): DayView {
   const views = assignmentViews(plan, lesson);
   const { y, m, d } = parts(lesson.date);
   const objectives = [...new Set(views.map((v) => v.objective).filter(Boolean))];
-  const newMinutes = views.filter((v) => v.assignment.activity !== 'homework').reduce((s, v) => s + v.assignment.minutes, 0);
+  const classMinutes = views.filter((v) => v.assignment.activity !== 'homework').reduce((s, v) => s + v.assignment.minutes, 0);
+  const newMinutes = views.filter((v) => v.assignment.activity === 'new').reduce((s, v) => s + v.assignment.minutes, 0);
   return {
     lesson,
     dateLabel: `${y}년 ${m}월 ${d}일 (${WEEKDAY_LABEL[weekday(lesson.date)]})`,
@@ -320,11 +321,13 @@ export function dayView(plan: Plan, lesson: Lesson): DayView {
     summary: summarizeLessons(plan, [lesson]),
     objectives,
     timeAllocation: [
+      // '복습'은 매 수업 앞의 정해진 복습 시간, '복습·연습·평가 활동'은 차시에 배정된 그런 활동이다 (새 학습과 따로 센다)
       { label: '복습', minutes: lesson.reviewMinutes },
-      { label: '새 진도(배정)', minutes: newMinutes },
+      { label: '새 학습', minutes: newMinutes },
+      { label: '복습·연습·평가 활동', minutes: classMinutes - newMinutes },
       { label: '여유', minutes: lesson.bufferMinutes },
       { label: '고정 일정', minutes: lesson.fixedMinutes },
-      { label: '미사용', minutes: Math.max(0, lesson.availableMinutes - newMinutes) },
+      { label: '미사용', minutes: Math.max(0, lesson.availableMinutes - classMinutes) },
     ],
   };
 }

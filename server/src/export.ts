@@ -4,7 +4,7 @@
  */
 import ExcelJS from 'exceljs';
 import type { OutputTemplate, Plan } from '@wb/shared';
-import { buildPlanViews, dayRows, fmtMinutes, resolveColumns, resolveSummaryColumns, type DayView } from '@wb/shared';
+import { buildPlanViews, dayRows, fmtMinutes, isISODate, resolveColumns, resolveSummaryColumns, type DayView } from '@wb/shared';
 
 export type Audience = 'teacher' | 'student';
 export type Level = 'year' | 'quarter' | 'month' | 'week' | 'day';
@@ -21,7 +21,9 @@ export interface ExportOptions {
 }
 
 export async function buildWorkbook(plan: Plan, opts: ExportOptions): Promise<Buffer> {
-  const views = buildPlanViews(plan, opts.from && opts.to ? { from: opts.from, to: opts.to } : undefined);
+  // 날짜 범위는 화면(/views)과 같은 기준으로 확인한다: 형식이 틀리거나 뒤집혔으면 전체 계획
+  const range = opts.from && opts.to && isISODate(opts.from) && isISODate(opts.to) && opts.from <= opts.to ? { from: opts.from, to: opts.to } : undefined;
+  const views = buildPlanViews(plan, range);
   const h = views.header;
   const wb = new ExcelJS.Workbook();
   wb.creator = 'WB 커리큘럼 플래너';
@@ -41,13 +43,14 @@ export async function buildWorkbook(plan: Plan, opts: ExportOptions): Promise<Bu
     ['상태', h.status],
     ['편성 방식', h.mode],
     ['총분량(수업시간)', fmtMinutes(h.totalMinutes)],
+    ...(range ? ([['출력 범위', `${range.from} ~ ${range.to} (이 범위 수업 ${views.summary.lessonCount}회, 배정 ${fmtMinutes(views.summary.assignedMinutes)})`]] as Array<[string, string]>) : []),
     ['미배정 범위', h.unassignedCount ? `${h.unassignedCount}건 (${fmtMinutes(h.unassignedMinutes)})` : '없음'],
-    ['변경 사항', h.lastChange],
     ['출력 대상', teacher ? '강사용 (지도 메모·시간 배분 포함)' : '학생·학부모용 (학습목표·범위·과제 중심)'],
     ['출력 양식', opts.template ? `${opts.template.name} (${columns.map((c) => c.label).join(', ')})` : `기본 (${columns.map((c) => c.label).join(', ')})`],
     ['완료율 기준', views.completionBasis],
   ];
-  if (teacher) rows.push(['작성자', h.author], ['검토자', h.reviewer]);
+  // 변경 사항(이력 문구)에는 지도 메모·상담 내용이 들어갈 수 있어 강사용에만 넣는다 (인쇄 보기와 같음)
+  if (teacher) rows.push(['변경 사항', h.lastChange], ['작성자', h.author], ['검토자', h.reviewer]);
   if (plan.isSample) rows.push(['주의', '가상 샘플 데이터입니다.']);
   for (const r of rows) cover.addRow(r);
   cover.getColumn(1).font = { bold: true };
@@ -84,12 +87,16 @@ export async function buildWorkbook(plan: Plan, opts: ExportOptions): Promise<Bu
     autoWidth(ws);
   }
 
+  // 시간(분) 열은 숫자 칸으로 써서 엑셀에서 합계를 낼 수 있게 한다
+  const minutesCol = columns.findIndex((c) => c.key === 'minutes');
+  const numeric = (row: string[]): Array<string | number> => row.map((v, i) => (i === minutesCol && /^\d+$/.test(v) ? Number(v) : v));
+
   // 주간·일간 시트는 출력 양식의 열 선택을 그대로 쓴다 (인쇄 보기와 같은 정의: shared/output.ts)
   if (opts.levels.includes('week')) {
     const ws = wb.addWorksheet('주간');
     ws.addRow(['주', ...columns.map((c) => c.label)]).font = { bold: true };
     for (const y of views.years) for (const q of y.quarters) for (const m of q.months) for (const w of m.weeks) {
-      for (const d of w.days) for (const row of dayRows(d, columns, opts.extraLabels)) ws.addRow([w.label, ...row]);
+      for (const d of w.days) for (const row of dayRows(d, columns, opts.extraLabels)) ws.addRow([w.label, ...numeric(row)]);
     }
     autoWidth(ws);
   }
@@ -97,8 +104,9 @@ export async function buildWorkbook(plan: Plan, opts: ExportOptions): Promise<Bu
   if (opts.levels.includes('day')) {
     const ws = wb.addWorksheet('일간');
     ws.addRow(columns.map((c) => c.label)).font = { bold: true };
-    const days: DayView[] = views.years.flatMap((y) => y.quarters).flatMap((q) => q.months).flatMap((m) => m.weeks).flatMap((w) => w.days);
-    for (const d of days) for (const row of dayRows(d, columns, opts.extraLabels)) ws.addRow(row);
+    // 일간 시트는 인쇄 보기의 일간과 같이 실제 수업(예정·보강)만 싣는다. 휴강·공휴일은 주간 시트에 표시된다
+    const days: DayView[] = views.years.flatMap((y) => y.quarters).flatMap((q) => q.months).flatMap((m) => m.weeks).flatMap((w) => w.days).filter((d) => d.lesson.status === 'scheduled' || d.lesson.status === 'makeup');
+    for (const d of days) for (const row of dayRows(d, columns, opts.extraLabels)) ws.addRow(numeric(row));
     autoWidth(ws);
   }
 

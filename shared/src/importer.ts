@@ -55,10 +55,54 @@ function normHeader(h: string): string {
   return h.trim().replace(/\s+/g, '').toLowerCase();
 }
 
+/**
+ * 탭·쉼표 구분 표를 칸으로 나눈다 (RFC 4180 따옴표 규칙).
+ * 엑셀에서 복사하면 쉼표·줄바꿈이 든 칸은 "…"로 감싸지고 칸 안의 따옴표는 ""로 적힌다.
+ */
 export function parseTable(text: string): string[][] {
-  const lines = text.replace(/\r\n?/g, '\n').split('\n').filter((l) => l.trim().length > 0);
-  const delimiter = lines.some((l) => l.includes('\t')) ? '\t' : ',';
-  return lines.map((l) => l.split(delimiter).map((c) => c.trim()));
+  const src = text.replace(/\r\n?/g, '\n');
+  const delimiter = src.includes('\t') ? '\t' : ',';
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let cell = '';
+  let quoted = false; // 지금 칸이 따옴표로 시작했는지
+  let inQuotes = false;
+  const endCell = () => {
+    row.push(quoted ? cell : cell.trim());
+    cell = '';
+    quoted = false;
+  };
+  const endRow = () => {
+    endCell();
+    if (row.some((c) => c.trim().length > 0)) rows.push(row);
+    row = [];
+  };
+  for (let i = 0; i < src.length; i++) {
+    const ch = src[i];
+    if (inQuotes) {
+      if (ch === '"') {
+        if (src[i + 1] === '"') {
+          cell += '"';
+          i++;
+        } else inQuotes = false;
+      } else cell += ch;
+      continue;
+    }
+    if (ch === '"' && cell.trim() === '') {
+      cell = '';
+      quoted = true;
+      inQuotes = true;
+    } else if (ch === delimiter) endCell();
+    else if (ch === '\n') endRow();
+    else cell += ch;
+  }
+  endRow();
+  return rows;
+}
+
+/** 0 이상의 정수만 숫자로 읽는다 ('12.5', '-3', '0x10', '1e2' 는 숫자가 아님) */
+function intOf(s: string): number {
+  return /^\d{1,6}$/.test(s) ? Number(s) : NaN;
 }
 
 export function previewImport(text: string, opts: { idGen?: () => string; defaultUnit?: ProgressUnit; defaultMinutes?: number } = {}): ImportPreview {
@@ -81,6 +125,8 @@ export function previewImport(text: string, opts: { idGen?: () => string; defaul
   }
 
   const items: LearningItem[] = [];
+  // 항목 index → 붙여넣은 표의 행 번호 (순서 열이 있어도 오류 위치는 표의 행으로 알린다)
+  const sourceRow = new Map<number, number>();
   const seenKeys = new Map<string, number>();
   body.forEach((cells, i) => {
     const rowNo = i + 1;
@@ -94,12 +140,17 @@ export function previewImport(text: string, opts: { idGen?: () => string; defaul
     if (unitRaw && !UNIT_ALIASES[unitRaw]) issues.push({ row: rowNo, level: 'warning', message: `알 수 없는 단위 '${get('progressUnit')}' → '${PROGRESS_UNIT_LABEL[progressUnit]}'로 처리` });
     const fromS = get('from');
     const toS = get('to');
-    const from = fromS ? Number(fromS) : NaN;
-    const to = toS ? Number(toS) : NaN;
+    const from = fromS ? intOf(fromS) : NaN;
+    const to = toS ? intOf(toS) : NaN;
     const minutesS = get('minutes');
-    const minutes = minutesS ? Number(minutesS) : NaN;
+    const minutes = minutesS ? intOf(minutesS) : NaN;
     const quantityS = get('quantity');
-    const quantity = quantityS ? Number(quantityS) : NaN;
+    const quantity = quantityS ? intOf(quantityS) : NaN;
+    // 숫자 칸에 숫자가 아닌 값이 있으면 조용히 바꾸지 않고 알린다
+    if (fromS && !Number.isFinite(from)) issues.push({ row: rowNo, level: 'error', message: `시작 '${fromS}'은(는) 0 이상의 정수가 아닙니다.` });
+    if (toS && !Number.isFinite(to)) issues.push({ row: rowNo, level: 'error', message: `끝 '${toS}'은(는) 0 이상의 정수가 아닙니다.` });
+    if (minutesS && !Number.isFinite(minutes)) issues.push({ row: rowNo, level: 'warning', message: `시간 '${minutesS}'은(는) 분 단위 정수가 아니어서 추정값을 씁니다.` });
+    if (quantityS && !(Number.isFinite(quantity) && quantity > 0)) issues.push({ row: rowNo, level: 'warning', message: `수량 '${quantityS}'은(는) 1 이상의 정수가 아니어서 1로 둡니다.` });
 
     if (!title && !get('unit') && !get('subunit')) {
       issues.push({ row: rowNo, level: 'error', message: '제목·단원이 모두 비어 있습니다.' });
@@ -112,8 +163,11 @@ export function previewImport(text: string, opts: { idGen?: () => string; defaul
       if (Number.isFinite(from) && Number.isFinite(to)) {
         if (to < from) issues.push({ row: rowNo, level: 'error', message: `범위 오류: 끝(${to})이 시작(${from})보다 작습니다.` });
         else range = { from, to };
-      } else if (Number.isFinite(from)) {
+      } else if (Number.isFinite(from) && !toS) {
         range = { from, to: from };
+        issues.push({ row: rowNo, level: 'warning', message: `끝이 비어 있어 ${from} 한 ${PROGRESS_UNIT_LABEL[progressUnit]}으로 두었습니다.` });
+      } else if (fromS || toS) {
+        // 숫자 오류는 위에서 알렸다
       } else {
         issues.push({ row: rowNo, level: 'error', message: `범위형 단위(${PROGRESS_UNIT_LABEL[progressUnit]})인데 시작·끝이 없습니다.` });
       }
@@ -135,14 +189,19 @@ export function previewImport(text: string, opts: { idGen?: () => string; defaul
     const splittable = splitRaw === '' ? (range ? range.to - range.from + 1 >= 2 : false) : ['y', 'yes', 'true', '예', '가능', 'o', '1'].includes(splitRaw);
     const usageRaw = get('usage');
     const usage: LearningItem['usage'] = /숙제|homework/.test(usageRaw) && /수업|class|둘|both/.test(usageRaw) ? 'both' : /숙제|homework/.test(usageRaw) ? 'homework' : /수업|class/.test(usageRaw) ? 'class' : 'both';
-    const diffRaw = Number(get('difficulty'));
+    const diffS = get('difficulty');
+    const diffRaw = intOf(diffS);
     const difficulty = diffRaw >= 1 && diffRaw <= 5 ? (diffRaw as 1 | 2 | 3 | 4 | 5) : undefined;
+    if (diffS && difficulty === undefined) issues.push({ row: rowNo, level: 'warning', message: `난이도 '${diffS}'은(는) 1~5 정수가 아니어서 비워 둡니다.` });
     const extra: Record<string, string> = {};
     headers.forEach((h, idx) => {
       if (h.startsWith('extra:') && cells[idx]) extra[h.slice(6)] = cells[idx].trim();
     });
-    const orderRaw = Number(get('order'));
+    const orderS = get('order');
+    const orderRaw = intOf(orderS);
+    if (orderS && !(orderRaw > 0)) issues.push({ row: rowNo, level: 'warning', message: `순서 '${orderS}'은(는) 1 이상의 정수가 아니어서 행 순서를 씁니다.` });
 
+    sourceRow.set(items.length, rowNo);
     items.push({
       id: idGen(),
       unit: get('unit'),
@@ -168,6 +227,7 @@ export function previewImport(text: string, opts: { idGen?: () => string; defaul
   });
 
   // 범위 겹침 검사 (같은 단위)
+  const rowOf = (it: LearningItem) => sourceRow.get(items.indexOf(it)) ?? 0;
   const ranged = items.filter((it) => it.range);
   for (let i = 0; i < ranged.length; i++) {
     for (let j = i + 1; j < ranged.length; j++) {
@@ -175,7 +235,7 @@ export function previewImport(text: string, opts: { idGen?: () => string; defaul
       const b = ranged[j];
       if (a.progressUnit !== b.progressUnit) continue;
       if (a.range!.from <= b.range!.to && b.range!.from <= a.range!.to) {
-        issues.push({ row: b.order, level: 'warning', message: `'${a.title}'(${a.range!.from}~${a.range!.to})과 '${b.title}'(${b.range!.from}~${b.range!.to}) 범위가 겹칩니다.` });
+        issues.push({ row: rowOf(b), level: 'warning', message: `'${a.title}'(${a.range!.from}~${a.range!.to})과 '${b.title}'(${b.range!.from}~${b.range!.to}) 범위가 겹칩니다.` });
       }
     }
   }
@@ -184,7 +244,7 @@ export function previewImport(text: string, opts: { idGen?: () => string; defaul
   for (let i = 1; i < pages.length; i++) {
     const prev = pages[i - 1].range!;
     const cur = pages[i].range!;
-    if (cur.from > prev.to + 1) issues.push({ row: pages[i].order, level: 'warning', message: `${prev.to + 1}~${cur.from - 1}쪽이 누락되었습니다 (의도한 제외 범위라면 무시).` });
+    if (cur.from > prev.to + 1) issues.push({ row: rowOf(pages[i]), level: 'warning', message: `${prev.to + 1}~${cur.from - 1}쪽이 누락되었습니다 (의도한 제외 범위라면 무시).` });
   }
 
   return { items, issues, headers, rowCount: body.length };

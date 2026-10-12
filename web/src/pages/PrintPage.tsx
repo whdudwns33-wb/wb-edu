@@ -99,7 +99,12 @@ export function PrintPage() {
             </tr>
             <tr>
               <th>총분량</th>
-              <td>{fmtMinutes(h.totalMinutes)} (수업 {v.summary.lessonCount}회)</td>
+              {/* 출력 범위가 있으면 계획 전체 분량과 범위 안 수치를 섞지 않고 따로 적는다 */}
+              <td>
+                {from && to
+                  ? `범위 안 수업 ${v.summary.lessonCount}회 · 배정 ${fmtMinutes(v.summary.assignedMinutes)} (계획 전체 ${fmtMinutes(h.totalMinutes)})`
+                  : `${fmtMinutes(h.totalMinutes)} (수업 ${v.summary.lessonCount}회)`}
+              </td>
               <th>미배정 범위</th>
               <td>{h.unassignedCount ? `${h.unassignedCount}건 (${fmtMinutes(h.unassignedMinutes)})` : '없음'}</td>
             </tr>
@@ -141,7 +146,7 @@ export function PrintPage() {
             {v.years.flatMap((y) => y.quarters).flatMap((q) => q.months).map((m) => (
               <div key={m.key}>
                 <h3>
-                  {m.label} <small>(수업 {m.summary.lessonCount}회 · 새 진도 {fmtMinutes(m.summary.assignedMinutes)}{teacher ? ` / 가능 ${fmtMinutes(m.summary.availableMinutes)}` : ''})</small>
+                  {m.label} <small>(수업 {m.summary.lessonCount}회 · 배정 {fmtMinutes(m.summary.assignedMinutes)}{teacher ? ` / 가능 ${fmtMinutes(m.summary.availableMinutes)}` : ''})</small>
                 </h3>
                 <SummaryTable cols={monthCols} rows={m.weeks} rowKey={(w) => `${w.key}-${w.from}`} ctx={sctx} />
               </div>

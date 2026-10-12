@@ -64,7 +64,7 @@ describe('5종 보기 집계 일치 (시나리오 3)', () => {
     expect(d.assignments[0].rangeText).toBe('12~23쪽');
     expect(d.assignments[0].pdfRangeText).toBe('PDF 14~25p');
     expect(d.timeAllocation.find((t) => t.label === '복습')!.minutes).toBe(10);
-    expect(d.timeAllocation.find((t) => t.label === '새 진도(배정)')!.minutes).toBe(45);
+    expect(d.timeAllocation.find((t) => t.label === '새 학습')!.minutes).toBe(45);
   });
 
   it('교재별 진행 단위를 섞지 않고 집계한다', () => {

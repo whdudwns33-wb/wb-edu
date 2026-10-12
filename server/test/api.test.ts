@@ -813,3 +813,43 @@ describe('3차 리뷰 결함 회귀 (서버)', () => {
     expect(auditRows('archive').some((r) => r.kind === 'curriculum')).toBe(true);
   });
 });
+
+describe('3차 리뷰 결함 회귀 (엑셀 출력)', () => {
+  const load = async (body: Buffer) => {
+    const ExcelJS = (await import('exceljs')).default;
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(body as unknown as ArrayBuffer);
+    return wb;
+  };
+  const cells = (ws: { eachRow: (cb: (r: { values: unknown }) => void) => void }) => {
+    const out: unknown[][] = [];
+    ws.eachRow((r) => out.push((r.values as unknown[]).slice(1)));
+    return out;
+  };
+
+  it('학생용 표지에는 변경 사항(이력 문구)을 넣지 않고, 분 열은 숫자 칸이다', async () => {
+    const p = (await asTeacher({ method: 'POST', url: '/api/plans', payload: { curriculumId: SAMPLE_IDS.curriculumBasic, settings } })).json();
+    const st = await asTeacher({ method: 'GET', url: `/api/plans/${p.id}/export.xlsx?audience=student` });
+    expect(st.statusCode).toBe(200);
+    const wb = await load(st.rawPayload);
+    const cover = cells(wb.getWorksheet('표지')!);
+    expect(cover.some((r) => r[0] === '변경 사항')).toBe(false);
+    const te = await load((await asTeacher({ method: 'GET', url: `/api/plans/${p.id}/export.xlsx?audience=teacher` })).rawPayload);
+    expect(cells(te.getWorksheet('표지')!).some((r) => r[0] === '변경 사항')).toBe(true);
+    const day = cells(te.getWorksheet('일간')!);
+    const header = day[0] as string[];
+    const mi = header.indexOf('시간(분)');
+    expect(mi).toBeGreaterThanOrEqual(0);
+    expect(day.slice(1).some((r) => typeof r[mi] === 'number')).toBe(true);
+  });
+
+  it('형식이 틀린 날짜 범위는 화면과 같이 무시하고 전체 계획을 내보낸다', async () => {
+    const p = (await asTeacher({ method: 'POST', url: '/api/plans', payload: { curriculumId: SAMPLE_IDS.curriculumBasic, settings } })).json();
+    const bad = await load((await asTeacher({ method: 'GET', url: `/api/plans/${p.id}/export.xlsx?from=2026-4-1&to=2026-4-30&levels=day` })).rawPayload);
+    const all = await load((await asTeacher({ method: 'GET', url: `/api/plans/${p.id}/export.xlsx?levels=day` })).rawPayload);
+    expect(cells(bad.getWorksheet('일간')!).length).toBe(cells(all.getWorksheet('일간')!).length);
+    expect(cells(all.getWorksheet('일간')!).length).toBeGreaterThan(1);
+    const ranged = await load((await asTeacher({ method: 'GET', url: `/api/plans/${p.id}/export.xlsx?from=2026-04-13&to=2026-04-19&levels=day` })).rawPayload);
+    expect(cells(ranged.getWorksheet('표지')!).some((r) => r[0] === '출력 범위')).toBe(true);
+  });
+});

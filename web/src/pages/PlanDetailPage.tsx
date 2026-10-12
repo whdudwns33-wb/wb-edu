@@ -213,7 +213,7 @@ function ViewsTab({ plan, reload }: { plan: PlanDoc; reload: () => void }) {
 
   const Summary = ({ s }: { s: YearView['summary'] }) => (
     <span className="small muted">
-      수업 {s.lessonCount}회{s.cancelledCount + s.holidayCount ? ` · 휴강 ${s.cancelledCount + s.holidayCount}` : ''}{s.makeupCount ? ` · 보강 ${s.makeupCount}` : ''} · 새 진도 {fmtMinutes(s.assignedMinutes)} / 가능 {fmtMinutes(s.availableMinutes)} · 현행 {s.byTrack.current} · 복습보충 {s.byTrack.review} · 선행 {s.byTrack.advance}분
+      수업 {s.lessonCount}회{s.cancelledCount + s.holidayCount ? ` · 휴강 ${s.cancelledCount + s.holidayCount}` : ''}{s.makeupCount ? ` · 보강 ${s.makeupCount}` : ''} · 배정 {fmtMinutes(s.assignedMinutes)} (새 학습 {fmtMinutes(s.byActivity.new)}) / 가능 {fmtMinutes(s.availableMinutes)} · 현행 {s.byTrack.current} · 복습보충 {s.byTrack.review} · 선행 {s.byTrack.advance}분
     </span>
   );
 
@@ -302,7 +302,7 @@ function ViewsTab({ plan, reload }: { plan: PlanDoc; reload: () => void }) {
                   <th>기간</th>
                   <th className="num">수업</th>
                   <th className="num">휴강·보강</th>
-                  <th className="num">새 진도</th>
+                  <th className="num">배정 시간</th>
                   <th>영역·교재별 배치</th>
                   <th>복습·평가 시점</th>
                   <th>단계·교재 전환</th>

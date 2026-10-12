@@ -8,7 +8,7 @@
  *  - 제안은 자동 적용하지 않는다. 담당자가 교재 편집 화면에서 적용 후 저장한다.
  */
 import type { LearningItem, Plan } from './types.ts';
-import { assignmentPortion } from './progress.ts';
+import { assignmentPortion, latestRecordsByAssignment } from './progress.ts';
 import { isRangedUnit, rangeCount } from './units.ts';
 
 export interface TimingSample {
@@ -64,12 +64,19 @@ export function timingSuggestions(textbookId: string, items: LearningItem[], pla
       const snapItem = snapTb?.items.find((i) => i.id === item.id);
       if (!snapItem) continue;
       const dateOf = new Map(plan.lessons.map((l) => [l.id, l.date]));
-      for (const r of plan.records) {
-        if (r.status !== 'done' || !r.actualMinutes || r.actualMinutes <= 0) continue;
-        const a = plan.assignments.find((x) => x.id === r.assignmentId);
+      // 배정마다 표본은 하나다. 가장 최근 기록이 '완료'일 때만 세고(완료를 취소했으면 빼고),
+      // 실제 분은 그 배정의 완료 기록 중 분을 적은 가장 최근 것에서 가져온다 (고쳐 쓴 기록이 표본을 늘리지 않게)
+      for (const latest of latestRecordsByAssignment(plan).values()) {
+        if (latest.status !== 'done') continue;
+        const a = plan.assignments.find((x) => x.id === latest.assignmentId);
         if (!a || a.itemId !== item.id || a.textbookId !== textbookId || a.activity !== 'new') continue;
+        const withMinutes = plan.records
+          .filter((r) => r.assignmentId === a.id && r.status === 'done' && r.actualMinutes && r.actualMinutes > 0)
+          .sort((x, y) => (x.recordedAt < y.recordedAt ? 1 : -1))[0];
+        if (!withMinutes?.actualMinutes) continue;
+        const actual = withMinutes.actualMinutes;
         const share = shareOf(snapItem, a);
-        samples.push({ planId: plan.id, planTitle: plan.title, date: dateOf.get(a.lessonId) ?? r.date, actualMinutes: r.actualMinutes, scaledMinutes: Math.round((r.actualMinutes / share) * 10) / 10, share });
+        samples.push({ planId: plan.id, planTitle: plan.title, date: dateOf.get(a.lessonId) ?? latest.date, actualMinutes: actual, scaledMinutes: Math.round((actual / share) * 10) / 10, share });
       }
     }
     if (samples.length === 0) continue;
