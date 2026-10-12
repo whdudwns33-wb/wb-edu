@@ -174,11 +174,9 @@ export function buildLessons(opts: BuildLessonsOptions): Lesson[] {
       status = 'holiday';
       if (!note) note = '공휴일';
     }
-    // 사용자가 직접 취소한 수업은 유지
-    if (existing && existing.status === 'cancelled' && !makeup) {
-      status = 'cancelled';
-      note = existing.note || '휴강';
-    }
+    // 휴강은 settings.offDays 가 기준이다 (휴강 처리 연산도 offDays 에 기록한다).
+    // 휴강일을 설정에서 지우면 다시 수업이 되며, 휴강 사유였던 메모는 지운다.
+    if (status === 'scheduled' && existing?.status === 'cancelled' && note === existing.note) note = '';
 
     const active = status === 'scheduled' || status === 'makeup';
     const review = active ? settings.reviewMinutes : 0;
@@ -199,10 +197,12 @@ export function buildLessons(opts: BuildLessonsOptions): Lesson[] {
     });
   }
   // 기록·고정이 있는 수업은 새 설정의 수업일이 아니어도 남긴다 (기록을 잃지 않기 위해)
-  const outIds = new Set(out.map((l) => l.id));
+  const outById = new Map(out.map((l) => [l.id, l]));
   for (const keep of opts.preserve ?? []) {
-    if (outIds.has(keep.id)) continue;
     const used = opts.preserveUsedMinutes?.get(keep.id) ?? 0;
+    const now = outById.get(keep.id);
+    // 새 설정에서도 수업이고 기록·고정 분량을 담을 수 있으면 새 값 그대로
+    if (now && (now.status === 'scheduled' || now.status === 'makeup') && now.availableMinutes >= used) continue;
     const sameDate = out.findIndex((l) => l.date === keep.date);
     const kept: Lesson = {
       ...keep,
@@ -302,6 +302,7 @@ export function queueEntryFromUnassigned(u: UnassignedEntry): QueueEntry {
     minutes: u.minutes,
     portion: u.portion ? { ...u.portion } : undefined,
     fraction: u.fraction,
+    continuedFrom: u.continuedFrom,
   };
 }
 
@@ -452,6 +453,16 @@ function fill(opts: FillOptions): FillResult {
         q.splice(i, 1);
         continue;
       }
+      // 나눌 수 있어도 한 단위(쪽·문항) 분량이 앞으로 어떤 수업에도 들어가지 않으면 영영 배정되지 않는다
+      if (splittable && info && isRangedUnit(info.item.progressUnit)) {
+        const r = entry.portion ?? info.item.range;
+        const perUnit = r ? Math.ceil(entry.minutes / Math.max(1, rangeCount(r))) : entry.minutes;
+        if (perUnit > maxBudgetAhead[lessonIndex]) {
+          unassigned.push(toUnassigned(entry, 'unsplittable', `한 단위 분량 ${perUnit}분 > 회당 최대 가능 ${maxBudgetAhead[lessonIndex]}분`, idGen));
+          q.splice(i, 1);
+          continue;
+        }
+      }
 
       if (splittable && remaining >= 5) {
         const split = splitEntry(entry, info!.item, remaining);
@@ -516,7 +527,7 @@ function fill(opts: FillOptions): FillResult {
       const lesson = lessons.find((l) => l.id === host.lessonId)!;
       assignments.push(toAssignment(hw, lesson, (keepOrderByLesson.get(lesson.id) ?? 0) + 1000 + hw.sessionOrder, idGen));
     } else {
-      unassigned.push(toUnassigned(hw, 'time_short', '해당 차시의 수업 항목이 배정되지 않아 숙제도 배정하지 못함', idGen));
+      unassigned.push(toUnassigned(hw, 'time_short', '해당 차시의 수업 항목이 배정되지 않아 숙제도 배정하지 못함 (수업 시간 부족 합계에는 넣지 않음)', idGen));
     }
   }
 
@@ -627,6 +638,7 @@ function toUnassigned(q: QueueEntry, reason: UnassignedReason, detail: string, i
     fraction: q.fraction,
     reason,
     detail,
+    continuedFrom: q.continuedFrom,
   };
 }
 
@@ -650,7 +662,7 @@ export function generateSchedule(settings: PlanSettings, ctx: ScheduleContext, e
     if (settings.targetDate && endDateComputed > settings.targetDate) {
       warnings.push(`완료 예정일 ${endDateComputed}이(가) 목표 완료일 ${settings.targetDate}을(를) 넘습니다.`);
     }
-    if (result.unassigned.some((u) => u.reason === 'time_short')) {
+    if (result.unassigned.some((u) => u.reason === 'time_short' && u.activity !== 'homework')) {
       warnings.push(`최대 탐색 기간(${settings.maxDays}일) 안에 전체 분량을 배정하지 못했습니다.`);
     }
   } else {
@@ -660,7 +672,7 @@ export function generateSchedule(settings: PlanSettings, ctx: ScheduleContext, e
     }
   }
 
-  const shortageMinutes = result.unassigned.filter((u) => u.reason === 'time_short' || u.reason === 'target_exceeded').reduce((s, u) => s + u.minutes, 0);
+  const shortageMinutes = classShortage(result.unassigned);
   if (shortageMinutes > 0) warnings.push(`새 진도 시간이 ${shortageMinutes}분 부족합니다.`);
 
   // 트랙 시간 합계 검증
@@ -800,6 +812,8 @@ interface RefillArgs {
   fromIndex: number;
   /** 추가로 맨 앞에 넣을 항목 */
   prepend?: QueueEntry[];
+  /** 추가로 다시 붙일 숙제 (수업 시간을 쓰지 않음) */
+  homeworkPrepend?: QueueEntry[];
   /** 이 수업(id)의 움직일 수 있는 배정은 제외하고 대기열에 넣는다 */
   excludeLessonIds?: Set<string>;
   lessonsOverride?: Lesson[];
@@ -839,7 +853,7 @@ function refill(args: RefillArgs): { state: ScheduleState; warnings: string[] } 
   });
 
   const queue: QueueEntry[] = [...(args.prepend ?? [])];
-  const homework: QueueEntry[] = [];
+  const homework: QueueEntry[] = [...(args.homeworkPrepend ?? [])];
   for (const a of movable) {
     const q = queueEntryFromAssignment(a, true);
     if (a.activity === 'homework') homework.push(q);
@@ -876,15 +890,30 @@ function refill(args: RefillArgs): { state: ScheduleState; warnings: string[] } 
     endDateComputed: plan.settings.mode === 'pace' ? lastAssignedDate(lessons, res.assignments) || plan.endDateComputed : lastAssignedDate(lessons, res.assignments),
   };
   const warnings = [...res.warnings];
-  const shortage = res.unassigned.filter((u) => u.reason === 'time_short' || u.reason === 'target_exceeded').reduce((s, u) => s + u.minutes, 0);
+  const shortage = classShortage(res.unassigned);
   if (shortage > 0) warnings.push(`새 진도 시간이 ${shortage}분 부족합니다.`);
+  // 유지한 배정(고정·기록)이 선수 항목으로 처리되므로, 재편성 뒤 선수 순서가 새로 어긋났는지 확인해 알린다
+  const beforeViolations = new Set(prerequisiteViolations(plan.lessons, plan.assignments, ctx.snapshot));
+  for (const v of prerequisiteViolations(lessons, res.assignments, ctx.snapshot)) if (!beforeViolations.has(v)) warnings.push(`선수 순서 확인 필요: ${v}`);
   const end = state.endDateComputed;
   if (plan.settings.targetDate && end && end > plan.settings.targetDate) warnings.push(`마지막 배정일 ${end}이(가) 목표 완료일을 넘습니다.`);
   if (plan.settings.endDate && end && end > plan.settings.endDate) warnings.push(`마지막 배정일 ${end}이(가) 종료일을 넘습니다.`);
   return { state, warnings };
 }
 
+/** 수업 시간 부족 합계 (숙제는 수업 시간을 쓰지 않으므로 뺀다) */
+function classShortage(list: UnassignedEntry[]): number {
+  return list.filter((u) => (u.reason === 'time_short' || u.reason === 'target_exceeded') && u.activity !== 'homework').reduce((s, u) => s + u.minutes, 0);
+}
+
 function finish(plan: Plan, before: ScheduleState, state: ScheduleState, warnings: string[], description: string, action: Plan['history'][number]['action'], by: string, at: string): OpResult {
+  // 기록·고정 때문에 새 설정과 다르게 남긴 수업을 알린다
+  const prevNote = new Map(plan.lessons.map((l) => [l.id, l.note]));
+  for (const l of state.lessons) {
+    if (l.note.includes('기록·고정 때문에 유지') && !(prevNote.get(l.id) ?? '').includes('기록·고정 때문에 유지')) {
+      warnings = [...warnings, `${l.date} 수업은 새 설정과 맞지 않지만 완료 기록·고정 배정이 있어 그대로 두었습니다. 필요하면 기록·고정을 정리하세요.`];
+    }
+  }
   const next = applyState(plan, state);
   next.history = [
     ...plan.history,
@@ -975,12 +1004,14 @@ export function postponeLesson(plan: Plan, ctx: ScheduleContext, lessonId: strin
   // 이 수업의 움직일 수 있는 배정을 대기열 맨 앞에 두고 다음 수업부터 채운다
   const mine = plan.assignments.filter((a) => a.lessonId === lessonId && !isImmovable(plan, a, recorded)).sort((a, b) => a.order - b.order);
   const planWithout: Plan = { ...plan, assignments: plan.assignments.filter((a) => !mine.includes(a)) };
-  const prepend = mine.map((a) => queueEntryFromAssignment(a, true));
-  const { state, warnings } = refill({ plan: planWithout, ctx, fromIndex: idx + 1, prepend });
-  if (plan.settings.mode === 'pace' && state.unassigned.some((u) => u.reason === 'time_short')) {
+  // 숙제는 수업 시간을 쓰지 않으므로 대기열 맨 앞이 아니라 숙제 목록으로 보내, 옮겨 간 차시 수업에 다시 붙게 한다
+  const prepend = mine.filter((a) => a.activity !== 'homework').map((a) => queueEntryFromAssignment(a, true));
+  const homeworkPrepend = mine.filter((a) => a.activity === 'homework').map((a) => queueEntryFromAssignment(a, true));
+  const { state, warnings } = refill({ plan: planWithout, ctx, fromIndex: idx + 1, prepend, homeworkPrepend });
+  if (plan.settings.mode === 'pace' && state.unassigned.some((u) => u.reason === 'time_short' && u.activity !== 'homework')) {
     // 속도 우선: 수업일을 늘려서 다시 시도
     const lessons = rebuildLessonsFor(plan, plan.settings, ctx);
-    const r2 = refill({ plan: planWithout, ctx, fromIndex: idx + 1, prepend, lessonsOverride: lessons });
+    const r2 = refill({ plan: planWithout, ctx, fromIndex: idx + 1, prepend, homeworkPrepend, lessonsOverride: lessons });
     const lastIdx = Math.max(r2.state.lessons.findIndex((l) => l.date === r2.state.endDateComputed), idx, 0);
     r2.state.lessons = r2.state.lessons.slice(0, lastIdx + 1);
     return finish(plan, before, r2.state, r2.warnings, `${target.date} 수업의 진도를 다음 수업으로 미뤘습니다.`, 'postpone', meta.by, meta.at);
@@ -997,7 +1028,7 @@ export function continueAssignment(
   plan: Plan,
   ctx: ScheduleContext,
   assignmentId: string,
-  remaining: { portion?: { from: number; to: number }; fraction?: number; minutes: number },
+  remaining: { portion?: { from: number; to: number }; portions?: Array<{ from: number; to: number }>; fraction?: number; minutes: number },
   meta: OpMeta,
 ): OpResult {
   const before = scheduleStateOf(plan);
@@ -1009,9 +1040,13 @@ export function continueAssignment(
     const d = plan.lessons.find((l) => l.id === existingCont.lessonId)?.date ?? '';
     throw new Error(`이미 남은 범위를 ${d} 수업에 이어서 진행하도록 배정했습니다. 그 수업의 기록을 입력하세요.`);
   }
+  // 이어서 진행한 남은 범위가 수업 시간이 모자라 미배정이 된 경우도 같은 범위다
+  if (plan.unassigned.some((u) => u.continuedFrom === a.id && u.reason !== 'excluded')) {
+    throw new Error('이미 이어서 진행하도록 한 남은 범위가 미배정 목록에 있습니다. 보강일을 추가하거나 미배정 항목을 처리하세요.');
+  }
   const idx = plan.lessons.findIndex((l) => l.id === a.lessonId);
   if (remaining.minutes <= 0) throw new Error('남은 분량이 없습니다.');
-  const cont: QueueEntry = {
+  const base: QueueEntry = {
     sessionId: a.sessionId,
     sessionOrder: a.sessionOrder,
     entryId: a.entryId,
@@ -1025,16 +1060,29 @@ export function continueAssignment(
     continuedFrom: a.id,
     repeatPurpose: a.repeatPurpose,
   };
-  let { state, warnings } = refill({ plan, ctx, fromIndex: idx + 1, prepend: [cont] });
-  if (plan.settings.mode === 'pace' && state.unassigned.some((u) => u.reason === 'time_short')) {
+  // 남은 범위가 여러 조각이면 조각마다 이어서 진행 항목을 만든다 (분은 쪽 수에 비례해 나눈다)
+  const pieces = remaining.portions && remaining.portions.length > 1 ? remaining.portions : null;
+  let conts: QueueEntry[] = [base];
+  if (pieces) {
+    const totalUnits = pieces.reduce((s, r) => s + (r.to - r.from + 1), 0);
+    let left = remaining.minutes;
+    conts = pieces.map((r, i) => {
+      const m = i === pieces.length - 1 ? left : Math.max(5, Math.round((remaining.minutes * (r.to - r.from + 1)) / totalUnits));
+      left -= m;
+      return { ...base, portion: { ...r }, minutes: Math.max(5, m) };
+    });
+  }
+  const cont = conts[0];
+  let { state, warnings } = refill({ plan, ctx, fromIndex: idx + 1, prepend: conts });
+  if (plan.settings.mode === 'pace' && state.unassigned.some((u) => u.reason === 'time_short' && u.activity !== 'homework')) {
     const lessons = rebuildLessonsFor(plan, plan.settings, ctx);
-    const r2 = refill({ plan, ctx, fromIndex: idx + 1, prepend: [cont], lessonsOverride: lessons });
+    const r2 = refill({ plan, ctx, fromIndex: idx + 1, prepend: conts, lessonsOverride: lessons });
     const lastIdx = Math.max(r2.state.lessons.findIndex((l) => l.date === r2.state.endDateComputed), idx, 0);
     r2.state.lessons = r2.state.lessons.slice(0, lastIdx + 1);
     state = r2.state;
     warnings = r2.warnings;
   }
-  const label = remaining.portion ? `${remaining.portion.from}~${remaining.portion.to}` : `${Math.round((remaining.fraction ?? 1) * 100)}%`;
+  const label = pieces ? pieces.map((r) => `${r.from}~${r.to}`).join(', ') : cont.portion ? `${cont.portion.from}~${cont.portion.to}` : `${Math.round((remaining.fraction ?? 1) * 100)}%`;
   return finish(plan, before, state, warnings, `남은 범위(${label})를 다음 수업에 이어서 진행하도록 배정했습니다.`, 'continue', meta.by, meta.at);
 }
 

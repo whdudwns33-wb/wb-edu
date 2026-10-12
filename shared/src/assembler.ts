@@ -116,22 +116,26 @@ export function autoAssemble(
       const e = queue[j];
       if (blocked.has(e.textbookId)) { j++; continue; }
       const it = itemIndex.get(e.itemId);
+      // 범위형(쪽·문항) 항목은 범위가 2 이상일 때만 나눈다. 한 쪽짜리를 분량 비율로 나누면
+      // 같은 쪽이 두 차시에 들어가고, 첫 조각만 마쳐도 그 쪽 전체가 완료로 계산된다 (편성 엔진과 같은 기준)
+      const span = e.portion ?? it?.range;
+      const canSplit = !!it && it.splittable && (isRangedUnit(it.progressUnit) ? !!span && rangeCount(span) >= 2 : e.minutes >= 10);
       if (e.minutes <= remaining) {
         s.entries.push(e);
         remaining -= e.minutes;
         queue.splice(j, 1);
         continue;
       }
-      if (it && it.splittable && remaining >= 5) {
-        const ranged = isRangedUnit(it.progressUnit) && e.portion && rangeCount(e.portion) >= 2;
+      if (it && canSplit && remaining >= 5) {
+        const ranged = isRangedUnit(it.progressUnit);
         if (ranged) {
-          const sp = splitRangeByMinutes(e.portion!, e.minutes, remaining);
+          const sp = splitRangeByMinutes(span!, e.minutes, remaining);
           if (sp) {
             s.entries.push({ ...e, portion: sp.first, minutes: sp.firstMinutes });
             queue[j] = { ...e, id: gen(opts.idGen), portion: sp.rest, minutes: sp.restMinutes };
             remaining -= sp.firstMinutes;
           }
-        } else if (e.minutes >= 10) {
+        } else {
           const fm = Math.floor(remaining / 5) * 5;
           if (fm >= 5 && fm < e.minutes) {
             const totalF = e.fraction ?? 1;
@@ -142,8 +146,8 @@ export function autoAssemble(
           }
         }
       }
-      if (!it || !it.splittable || e.minutes > budget) {
-        if (e.minutes > budget && !(it && it.splittable)) {
+      if (!it || !canSplit || e.minutes > budget) {
+        if (e.minutes > budget && !canSplit) {
           // 어떤 차시에도 들어갈 수 없는 분할 불가 항목
           unassigned.push(e);
           queue.splice(j, 1);

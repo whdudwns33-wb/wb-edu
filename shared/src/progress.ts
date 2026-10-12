@@ -110,6 +110,13 @@ export function itemCompletion(plan: Plan, itemId: string): ItemCompletion | nul
     completedFraction += c.fraction;
   }
 
+  // 시간이 모자라 미배정이 된 뒤 '제외'로 처리한 범위도 제외 분량이다
+  for (const u of plan.unassigned) {
+    if (u.itemId !== itemId || u.reason !== 'excluded' || u.activity !== 'new') continue;
+    if (ranged) excludedRanges.push(u.portion ?? item.range!);
+    else excludedFraction += u.fraction ?? 1;
+  }
+
   if (ranged) {
     const completedN = normalizeRanges(completedRanges);
     const remaining = subtractRanges(item.range!, [...completedN, ...excludedRanges]);
@@ -120,7 +127,7 @@ export function itemCompletion(plan: Plan, itemId: string): ItemCompletion | nul
       total,
       planned: unionCount(plannedRanges),
       completed: unionCount(completedN),
-      excluded: unionCount(excludedRanges),
+      excluded: unionCount(subtractRanges(item.range!, subtractRanges(item.range!, normalizeRanges(excludedRanges)).concat(completedN))),
       remainingRanges: remaining,
       completedRanges: completedN,
       completedFraction: total ? unionCount(completedN) / total : 0,
@@ -142,7 +149,7 @@ export function itemCompletion(plan: Plan, itemId: string): ItemCompletion | nul
 }
 
 /** 부분 완료 기록 뒤 이어서 진행할 남은 범위와 분 */
-export function remainingAfterRecord(plan: Plan, assignmentId: string): { portion?: ItemRange; fraction?: number; minutes: number } | null {
+export function remainingAfterRecord(plan: Plan, assignmentId: string): { portion?: ItemRange; portions?: ItemRange[]; fraction?: number; minutes: number } | null {
   const a = plan.assignments.find((x) => x.id === assignmentId);
   if (!a) return null;
   const items = snapshotItemIndex(plan.snapshot);
@@ -158,10 +165,11 @@ export function remainingAfterRecord(plan: Plan, assignmentId: string): { portio
   if (p.range) {
     const rem = subtractRanges(p.range, c.ranges);
     if (rem.length === 0) return null;
-    const portion = { from: rem[0].from, to: rem[rem.length - 1].to };
-    const count = portion.to - portion.from + 1;
+    // 가운데를 먼저 마친 경우(예: 12~23 중 15~18 완료) 남은 범위는 12~14, 19~23 두 조각이다.
+    // 한 범위(12~23)로 합치면 이미 한 쪽을 다시 배정하게 되므로 조각을 그대로 돌려준다.
+    const count = rem.reduce((s, r) => s + (r.to - r.from + 1), 0);
     const perUnit = a.minutes / (p.range.to - p.range.from + 1);
-    return { portion, minutes: Math.max(5, Math.round(perUnit * count)) };
+    return { portion: rem[0], portions: rem.length > 1 ? rem : undefined, minutes: Math.max(5, Math.round(perUnit * count)) };
   }
   const remF = Math.max(0, p.fraction - c.fraction);
   if (remF <= 0.0001) return null;

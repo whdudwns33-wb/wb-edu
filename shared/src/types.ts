@@ -425,6 +425,8 @@ export interface UnassignedEntry {
   fraction?: number;
   reason: UnassignedReason;
   detail: string;
+  /** 이어서 진행으로 생긴 남은 범위가 미배정이 된 경우, 원래 배정 id (중복 이어서 진행을 막는 연결) */
+  continuedFrom?: string;
 }
 
 /** 실행 계획이 보존하는 과정·교재 스냅샷 */

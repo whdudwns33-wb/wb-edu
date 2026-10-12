@@ -73,7 +73,8 @@ export function objectiveMap(plan: Plan, objectives: LearningObjective[], range?
       if (rec && (rec.status === 'done' || rec.status === 'partial')) progressed.push(d!);
     }
     const confirmedDates = plan.understandingChecks
-      .filter((c) => c.result === 'confirmed' && (c.objectiveIds.includes(oid) || itemIds.includes(c.itemId)))
+      // 이해 확인이 목표를 골라 기록했으면 그 목표만 확인된 것으로 본다 (목표를 고르지 않은 옛 기록은 항목의 모든 목표)
+      .filter((c) => c.result === 'confirmed' && (c.objectiveIds.length ? c.objectiveIds.includes(oid) : itemIds.includes(c.itemId)))
       .map((c) => dateOf.get(c.lessonId) ?? c.checkedAt.slice(0, 10))
       .filter((d) => inRange(d));
     let state: ObjectiveState = 'unassigned';
