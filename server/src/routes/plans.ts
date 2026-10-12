@@ -57,6 +57,12 @@ function mustAccess(user: SessionUser, plan: Plan): Plan {
 }
 
 export function buildSnapshot(store: AppContext['store'], curriculum: Curriculum, at: string): PlanSnapshot {
+  // 교재를 고친 뒤 과정이 없어진 항목·교재를 가리키면, 계획이 없는 항목을 배정하게 되므로 만들지 않는다
+  const tbs = new Map(curriculum.textbooks.map((ref) => [ref.textbookId, store.get<Textbook>('textbook', ref.textbookId)]));
+  const missing = [...curriculum.sessions.flatMap((s) => s.entries), ...curriculum.unassignedEntries]
+    .filter((e) => !tbs.get(e.textbookId)?.items.some((i) => i.id === e.itemId))
+    .map((e) => `${tbs.get(e.textbookId)?.title ?? e.textbookId}: ${e.itemId}`);
+  if (missing.length) throw new HttpError(400, `과정 '${curriculum.title}'이(가) 교재에 없는 학습항목을 가리킵니다. 과정을 열어 배치를 고친 뒤 다시 시도하세요.`, [...new Set(missing)].slice(0, 20));
   return {
     curriculumId: curriculum.id,
     curriculumTitle: curriculum.title,
@@ -161,6 +167,28 @@ export function normalizeSettings(raw: unknown, defaults?: PlanSettings): PlanSe
   };
 }
 
+/**
+ * 학습 범위 선택(특정 차시 구간·특정 항목)을 스냅샷에 적용한다.
+ * 선택 범위 앞 차시에만 나오는 항목은 이미 배운 것으로 보고 기록해 둔다 (그 항목을 선수로 둔 뒤 항목이 막히지 않게).
+ */
+export function applySelection(snapshot: PlanSnapshot, sel: { fromSessionOrder?: number; toSessionOrder?: number; includeItemIds?: string[] }): PlanSnapshot {
+  const from = sel.fromSessionOrder || 0;
+  const to = sel.toSessionOrder || 0;
+  const only = sel.includeItemIds ?? [];
+  if (!from && !to && only.length === 0) return snapshot;
+  const all = snapshot.sessions;
+  let sessions = all.filter((s) => (!from || s.order >= from) && (!to || s.order <= to));
+  if (only.length) sessions = sessions.map((s) => ({ ...s, entries: s.entries.filter((e) => only.includes(e.itemId)) })).filter((s) => s.entries.length > 0);
+  const firstOrder = sessions.length ? Math.min(...sessions.map((s) => s.order)) : 0;
+  // 선택 범위의 첫 차시보다 앞 차시의 새 학습·연습 배치 분량 (선수 조건 판단에서 배운 것으로 본다)
+  const assumedDone = all
+    .filter((s) => s.order < firstOrder)
+    .flatMap((s) => s.entries)
+    .filter((e) => e.activity === 'new' || e.activity === 'practice')
+    .map((e) => ({ itemId: e.itemId, portion: e.portion, fraction: e.fraction }));
+  return { ...snapshot, sessions, selection: { fromSessionOrder: from || undefined, toSessionOrder: to || undefined, includeItemIds: only.length ? only : undefined, assumedDone } };
+}
+
 function ctxFor(store: AppContext['store'], plan: Plan): ScheduleContext {
   return { snapshot: plan.snapshot, holidayDates: holidayDatesFor(store, plan.settings) };
 }
@@ -219,13 +247,8 @@ export function registerPlanRoutes(app: FastifyInstance, ctx: AppContext) {
     if (curriculum.archived) throw new HttpError(400, '보관된 과정으로는 계획을 만들 수 없습니다.');
     const at = ctx.now();
     const settings = normalizeSettings(r.settings);
-    const snapshot = buildSnapshot(store, curriculum, at);
     // 학습 범위 선택: 특정 차시 구간 또는 특정 항목만 (중간 지점부터 적용)
-    const fromSession = num(r.fromSessionOrder, 0);
-    const toSession = num(r.toSessionOrder, 0);
-    const onlyItemIds = arr<string>(r.includeItemIds);
-    if (fromSession || toSession) snapshot.sessions = snapshot.sessions.filter((s) => (!fromSession || s.order >= fromSession) && (!toSession || s.order <= toSession));
-    if (onlyItemIds.length) snapshot.sessions = snapshot.sessions.map((s) => ({ ...s, entries: s.entries.filter((e) => onlyItemIds.includes(e.itemId)) })).filter((s) => s.entries.length > 0);
+    const snapshot = applySelection(buildSnapshot(store, curriculum, at), { fromSessionOrder: num(r.fromSessionOrder, 0), toSessionOrder: num(r.toSessionOrder, 0), includeItemIds: arr<unknown>(r.includeItemIds).filter((x): x is string => typeof x === 'string') });
     if (snapshot.sessions.length === 0) throw new HttpError(400, '선택한 범위에 학습항목이 없습니다.');
     if (snapshot.advance && !r.settings) settings.tracks.currentMinMinutes = snapshot.advance.currentMinMinutes;
 
@@ -268,12 +291,7 @@ export function registerPlanRoutes(app: FastifyInstance, ctx: AppContext) {
     if (!curriculum) throw new HttpError(400, '표준과정을 선택하세요.');
     if (curriculum.archived) throw new HttpError(400, '보관된 과정으로는 계획을 만들 수 없습니다.');
     const settings = normalizeSettings(r.settings);
-    const snapshot = buildSnapshot(store, curriculum, ctx.now());
-    const fromSession = num(r.fromSessionOrder, 0);
-    const toSession = num(r.toSessionOrder, 0);
-    if (fromSession || toSession) snapshot.sessions = snapshot.sessions.filter((s) => (!fromSession || s.order >= fromSession) && (!toSession || s.order <= toSession));
-    const onlyItemIds = arr<string>(r.includeItemIds);
-    if (onlyItemIds.length) snapshot.sessions = snapshot.sessions.map((s) => ({ ...s, entries: s.entries.filter((e) => onlyItemIds.includes(e.itemId)) })).filter((s) => s.entries.length > 0);
+    const snapshot = applySelection(buildSnapshot(store, curriculum, ctx.now()), { fromSessionOrder: num(r.fromSessionOrder, 0), toSessionOrder: num(r.toSessionOrder, 0), includeItemIds: arr<unknown>(r.includeItemIds).filter((x): x is string => typeof x === 'string') });
     const res = generateSchedule(settings, { snapshot, holidayDates: holidayDatesFor(store, settings) });
     return { lessons: res.lessons, assignments: res.assignments, unassigned: res.unassigned, endDateComputed: res.endDateComputed, warnings: res.warnings, shortageMinutes: res.shortageMinutes, snapshot };
   });
@@ -328,7 +346,13 @@ export function registerPlanRoutes(app: FastifyInstance, ctx: AppContext) {
     }
     const curriculum = store.mustGet<Curriculum>('curriculum', existing.curriculumId);
     const at = ctx.now();
-    const snapshot = buildSnapshot(store, curriculum, at);
+    // 계획을 만들 때 고른 학습 범위를 다시 적용하고, 담당자의 선행 기초 확인은 그대로 둔다 (계획 단위의 선택이므로)
+    const snapshot = applySelection(buildSnapshot(store, curriculum, at), existing.snapshot.selection ?? {});
+    if (snapshot.sessions.length === 0) throw new HttpError(400, '갱신한 과정에서 이 계획의 학습 범위에 해당하는 차시가 없습니다. 새 계획을 만드세요.');
+    const prevAdv = existing.snapshot.advance;
+    if (snapshot.advance && prevAdv?.prerequisitesConfirmed) {
+      snapshot.advance = { ...snapshot.advance, prerequisitesConfirmed: true, prerequisitesConfirmedBy: prevAdv.prerequisitesConfirmedBy, prerequisitesConfirmedAt: prevAdv.prerequisitesConfirmedAt };
+    }
     // 새 스냅샷의 차시 구성으로 처음부터 다시 편성한다 (기존 수업 id 는 날짜 기준으로 보존)
     const res = generateSchedule(existing.settings, { snapshot, holidayDates: holidayDatesFor(store, existing.settings) }, existing.lessons);
     const before = scheduleStateOf(existing);
@@ -554,7 +578,9 @@ export function registerPlanRoutes(app: FastifyInstance, ctx: AppContext) {
       target: '',
       lessons,
       assignments,
-      unassigned: src.unassigned.map((u) => ({ ...u, id: genId() })),
+      unassigned: src.unassigned.map((u) => ({ ...u, id: genId(), continuedFrom: u.continuedFrom ? aMap.get(u.continuedFrom) : undefined })),
+      // 선행 기초 확인은 특정 학생에 대한 담당자 판단이므로 복제본은 새로 확인한다 (근거가 담긴 이력도 복제하지 않는다)
+      snapshot: src.snapshot.advance ? { ...structuredClone(src.snapshot), advance: { ...src.snapshot.advance, prerequisitesConfirmed: false, prerequisitesConfirmedBy: undefined, prerequisitesConfirmedAt: undefined } } : structuredClone(src.snapshot),
       records: [],
       understandingChecks: [],
       status: 'draft',

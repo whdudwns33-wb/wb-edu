@@ -227,10 +227,12 @@ describe('실행 계획', () => {
   it('교재·과정 개정 후에도 확정 계획은 유지된다 (시나리오 11)', async () => {
     const tb = (await asAdmin({ method: 'GET', url: `/api/textbooks/${SAMPLE_IDS.marketTextbook}` })).json();
     tb.items[0].title = '개정된 제목';
-    tb.items[0].range = { from: 1, to: 3 };
+    // 과정이 쓰는 12~23쪽을 벗어나지 않는 개정 (범위를 넓히면 과정에서 고치라는 알림이 함께 온다)
+    tb.items[0].range = { from: 12, to: 25 };
     tb.edition = '2027년 개정판';
     const put = await asAdmin({ method: 'PUT', url: `/api/textbooks/${SAMPLE_IDS.marketTextbook}`, payload: tb });
     expect(put.statusCode).toBe(200);
+    expect((put.json().warnings ?? []).join(' ')).toContain('24~25');
     const plan = (await asTeacher({ method: 'GET', url: `/api/plans/${planId}` })).json();
     const snapItem = plan.snapshot.textbooks.find((t: { id: string }) => t.id === SAMPLE_IDS.marketTextbook).items[0];
     expect(snapItem.title).not.toBe('개정된 제목');
@@ -851,5 +853,98 @@ describe('3차 리뷰 결함 회귀 (엑셀 출력)', () => {
     expect(cells(all.getWorksheet('일간')!).length).toBeGreaterThan(1);
     const ranged = await load((await asTeacher({ method: 'GET', url: `/api/plans/${p.id}/export.xlsx?from=2026-04-13&to=2026-04-19&levels=day` })).rawPayload);
     expect(cells(ranged.getWorksheet('표지')!).some((r) => r[0] === '출력 범위')).toBe(true);
+  });
+});
+
+describe('4차 리뷰 결함 회귀 (교재·과정 편집 흐름)', () => {
+  let b4: Awaited<ReturnType<typeof buildApp>>;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let admin: (o: Record<string, unknown>) => Promise<{ statusCode: number; json: () => any }>;
+  beforeAll(async () => {
+    b4 = await buildApp({ dbPath: ':memory:' });
+    seedAdmin(b4.ctx, 'admin', 'admin1234');
+    seedDemoTeacher(b4.ctx);
+    seedSamples(b4.ctx);
+    await b4.app.ready();
+    const res = await b4.app.inject({ method: 'POST', url: '/api/auth/login', payload: { username: 'admin', password: 'admin1234' } });
+    const c = res.cookies.find((x) => x.name === 'wb_session')!;
+    admin = (o) => b4.app.inject({ ...o, headers: { cookie: `${c.name}=${c.value}` } } as never);
+  });
+  afterAll(async () => {
+    await b4.app.close();
+  });
+  const I = (k: number) => `${SAMPLE_IDS.marketTextbook}-i${k}`;
+  const getTb = async () => (await admin({ method: 'GET', url: `/api/textbooks/${SAMPLE_IDS.marketTextbook}` })).json();
+
+  it('과정 중간 차시부터 계획하면 앞 차시 항목은 배운 것으로 보고 선수 조건을 충족한다', async () => {
+    const res = await admin({ method: 'POST', url: '/api/plans', payload: { curriculumId: SAMPLE_IDS.curriculumBasic, settings, fromSessionOrder: 4, toSessionOrder: 5 } });
+    expect(res.statusCode).toBe(201);
+    const p = res.json();
+    expect(p.assignments.length).toBeGreaterThan(0);
+    expect(p.unassigned.filter((u: { reason: string }) => u.reason === 'prerequisite')).toEqual([]);
+    expect(p.snapshot.selection.fromSessionOrder).toBe(4);
+    // 스냅샷을 갱신해도 고른 범위를 유지한다
+    const ref = await admin({ method: 'POST', url: `/api/plans/${p.id}/refresh-snapshot`, payload: { version: p.version } });
+    expect(ref.statusCode).toBe(200);
+    expect(ref.json().snapshot.sessions.map((s: { order: number }) => s.order)).toEqual([4, 5]);
+  });
+
+  it('스냅샷 갱신은 선행 기초 확인을 유지하고, 계획 복제는 확인을 초기화한다', async () => {
+    const p = (await admin({ method: 'POST', url: '/api/plans', payload: { curriculumId: SAMPLE_IDS.curriculumAdvance, settings: { ...settings, endDate: '2026-05-31' } } })).json();
+    const ok = (await admin({ method: 'POST', url: `/api/plans/${p.id}/advance-confirm`, payload: { confirmed: true, note: '학생 A 진단평가 90점', version: p.version } })).json();
+    const ref = (await admin({ method: 'POST', url: `/api/plans/${p.id}/refresh-snapshot`, payload: { version: ok.version } })).json();
+    expect(ref.snapshot.advance.prerequisitesConfirmed).toBe(true);
+    const clone = (await admin({ method: 'POST', url: `/api/plans/${p.id}/clone` })).json();
+    expect(clone.snapshot.advance.prerequisitesConfirmed).toBe(false);
+    expect(clone.blockers.join(' ')).toContain('기초 확인');
+  });
+
+  it('과정이 쓰는 항목을 지우거나 배치 범위 밖으로 줄이는 교재 저장은 막는다', async () => {
+    const tb = await getTb();
+    // 다른 항목의 선수 참조도 함께 지워, 과정 사용 검사만 걸리게 한다
+    const items = tb.items.filter((i: { id: string }) => i.id !== I(3)).map((i: { prerequisiteItemIds: string[] }) => ({ ...i, prerequisiteItemIds: i.prerequisiteItemIds.filter((p) => p !== I(3)) }));
+    const removed = await admin({ method: 'PUT', url: `/api/textbooks/${tb.id}`, payload: { ...tb, items } });
+    expect(removed.statusCode).toBe(400);
+    expect(JSON.stringify(removed.json().details)).toContain('과정');
+    const shrunk = structuredClone(tb);
+    shrunk.items[0].range = { from: 12, to: 17 };
+    expect((await admin({ method: 'PUT', url: `/api/textbooks/${tb.id}`, payload: shrunk })).statusCode).toBe(400);
+  });
+
+  it('선수 학습 순환과 없는 항목 참조는 교재 저장에서 거절한다', async () => {
+    const tb = await getTb();
+    const cyc = structuredClone(tb);
+    cyc.items.find((i: { id: string }) => i.id === I(3)).prerequisiteItemIds.push(I(4));
+    const r1 = await admin({ method: 'PUT', url: `/api/textbooks/${tb.id}`, payload: cyc });
+    expect(r1.statusCode).toBe(400);
+    expect(r1.json().error).toContain('순환');
+    const dangling = structuredClone(tb);
+    dangling.items[0].prerequisiteItemIds = ['nope'];
+    expect((await admin({ method: 'PUT', url: `/api/textbooks/${tb.id}`, payload: dangling })).statusCode).toBe(400);
+  });
+
+  it('과정 배치의 범위·비율·시간·사용 범위·중복 id 를 검사한다', async () => {
+    const src = (await admin({ method: 'GET', url: `/api/curricula/${SAMPLE_IDS.curriculumBasic}` })).json();
+    const post = (mut: (c: typeof src) => void) => {
+      const c = structuredClone(src);
+      delete c.id;
+      mut(c);
+      return admin({ method: 'POST', url: '/api/curricula', payload: c });
+    };
+    expect((await post((c) => { c.sessions[0].entries[0].portion = { from: 500, to: 520 }; })).statusCode).toBe(400);
+    expect((await post((c) => { c.sessions[0].entries[0].portion = { from: 23, to: 12 }; })).statusCode).toBe(400);
+    expect((await post((c) => { c.sessions[0].entries[0].fraction = -2; })).statusCode).toBe(400);
+    expect((await post((c) => { c.sessions[0].entries[0].minutes = 0.5; })).statusCode).toBe(400);
+    expect((await post((c) => { c.textbooks[0].excludedItemIds = [c.sessions[0].entries[0].itemId]; })).statusCode).toBe(400);
+    expect((await post((c) => { c.sessions[1].entries[0].id = c.sessions[0].entries[0].id; })).statusCode).toBe(400);
+    expect((await post((c) => { c.sessions[1].id = c.sessions[0].id; })).statusCode).toBe(400);
+    expect((await post((c) => { c.sessions.push(null); })).statusCode).toBe(400);
+    expect((await post((c) => { c.textbooks.push(null); })).statusCode).toBe(400);
+    expect((await post(() => {})).statusCode).toBe(201);
+  });
+
+  it('교재의 제외 범위 목록에 null 이 있어도 500 대신 무시한다', async () => {
+    const tb = await getTb();
+    expect((await admin({ method: 'PUT', url: `/api/textbooks/${tb.id}`, payload: { ...tb, excludedRanges: [null] } })).statusCode).toBe(200);
   });
 });

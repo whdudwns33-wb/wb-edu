@@ -171,9 +171,10 @@ export function TextbookEditorPage() {
     setMsg('');
     try {
       const payload = { ...doc, items: doc.items.map((it, i) => ({ ...it, order: it.order || i + 1 })) };
-      const saved = isNew ? await post<Textbook>('/api/textbooks', payload) : await put<Textbook>(`/api/textbooks/${doc.id}`, payload);
+      const res = isNew ? await post<Textbook>('/api/textbooks', payload) : await put<Textbook & { warnings?: string[] }>(`/api/textbooks/${doc.id}`, payload);
+      const { warnings, ...saved } = res as Textbook & { warnings?: string[] };
       loaded(saved);
-      setMsg('저장했습니다.');
+      setMsg(warnings?.length ? `저장했습니다. 확인할 것: ${warnings.join(' ')}` : '저장했습니다.');
       if (isNew) nav(`/textbooks/${saved.id}`, { replace: true });
     } catch (e) {
       setError(errorMessage(e));

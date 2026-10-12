@@ -127,6 +127,8 @@ export function previewImport(text: string, opts: { idGen?: () => string; defaul
   const items: LearningItem[] = [];
   // 항목 index → 붙여넣은 표의 행 번호 (순서 열이 있어도 오류 위치는 표의 행으로 알린다)
   const sourceRow = new Map<number, number>();
+  // 항목 index → '선수' 칸의 글자 (모든 항목을 읽은 뒤 제목·순서로 연결한다)
+  const prereqText = new Map<number, string>();
   const seenKeys = new Map<string, number>();
   body.forEach((cells, i) => {
     const rowNo = i + 1;
@@ -202,6 +204,7 @@ export function previewImport(text: string, opts: { idGen?: () => string; defaul
     if (orderS && !(orderRaw > 0)) issues.push({ row: rowNo, level: 'warning', message: `순서 '${orderS}'은(는) 1 이상의 정수가 아니어서 행 순서를 씁니다.` });
 
     sourceRow.set(items.length, rowNo);
+    if (get('prerequisites')) prereqText.set(items.length, get('prerequisites'));
     items.push({
       id: idGen(),
       unit: get('unit'),
@@ -228,6 +231,23 @@ export function previewImport(text: string, opts: { idGen?: () => string; defaul
 
   // 범위 겹침 검사 (같은 단위)
   const rowOf = (it: LearningItem) => sourceRow.get(items.indexOf(it)) ?? 0;
+
+  // 선수 학습 칸: 쉼표·세미콜론·슬래시로 나눈 각 값을 같은 표의 항목 제목, 또는 순서 번호로 찾는다
+  for (const [idx, raw] of prereqText) {
+    const it = items[idx];
+    const ids: string[] = [];
+    const unknown: string[] = [];
+    for (const tok of raw.split(/[,;/]/).map((t) => t.trim()).filter(Boolean)) {
+      const byTitle = items.filter((x) => x.title === tok);
+      const n = intOf(tok);
+      const byOrder = Number.isFinite(n) ? items.filter((x) => x.order === n) : [];
+      const hit = byTitle.length === 1 ? byTitle[0] : byOrder.length === 1 ? byOrder[0] : undefined;
+      if (!hit || hit === it) unknown.push(tok);
+      else if (!ids.includes(hit.id)) ids.push(hit.id);
+    }
+    it.prerequisiteItemIds = ids;
+    if (unknown.length) issues.push({ row: rowOf(it), level: 'warning', message: `선수 학습 '${unknown.join(', ')}'을(를) 이 표의 항목 제목이나 순서 번호에서 찾지 못해 연결하지 않았습니다.` });
+  }
   const ranged = items.filter((it) => it.range);
   for (let i = 0; i < ranged.length; i++) {
     for (let j = i + 1; j < ranged.length; j++) {

@@ -376,6 +376,10 @@ function fill(opts: FillOptions): FillResult {
   const { lessons, startIndex, settings, snapshot, idGen } = opts;
   const items = snapshotItemIndex(snapshot);
   const prereq = makePrereqChecker(items);
+  // 과정 중간부터 계획한 경우 앞 차시의 배치 분량은 이미 배운 것으로 본다
+  for (const d of snapshot.selection?.assumedDone ?? []) {
+    prereq.markAssigned({ sessionId: '', sessionOrder: 0, entryId: '', textbookId: items.get(d.itemId)?.textbookId ?? '', itemId: d.itemId, track: 'current', activity: 'new', minutes: 0, portion: d.portion, fraction: d.fraction });
+  }
   const assignments: Assignment[] = [...opts.keep];
   const unassigned: UnassignedEntry[] = [];
   const warnings: string[] = [];
@@ -538,6 +542,23 @@ function fill(opts: FillOptions): FillResult {
   for (const track of ['current', 'review', 'advance'] as Track[]) for (const e of queues[track]) { pendingItemIds.add(e.itemId); allPending.push(e); }
   // 선수 항목이 계획 밖에 있거나(미배정 확정) 그 선수 항목 자체가 순서 제약으로 막힌 경우 → 연쇄적으로 순서 제약
   const blockedItems = new Set<string>();
+  // 선수 관계가 서로 물고 도는 항목(가→나→가)은 시간이 있어도 영영 배정되지 않으므로 순서 제약으로 본다
+  // (교재 저장 때 순환을 막지만, 그 전에 만든 스냅샷에 남아 있을 수 있다)
+  const pendingPrereqs = (id: string) => (items.get(id)?.item.prerequisiteItemIds ?? []).filter((p) => pendingItemIds.has(p));
+  for (const start of pendingItemIds) {
+    const seen = new Set<string>();
+    const stack = [...pendingPrereqs(start)];
+    while (stack.length) {
+      const cur = stack.pop()!;
+      if (cur === start) {
+        blockedItems.add(start);
+        break;
+      }
+      if (seen.has(cur)) continue;
+      seen.add(cur);
+      stack.push(...pendingPrereqs(cur));
+    }
+  }
   let changed = true;
   while (changed) {
     changed = false;
@@ -551,14 +572,21 @@ function fill(opts: FillOptions): FillResult {
     }
   }
   for (const track of ['current', 'review', 'advance'] as Track[]) {
+    // 같은 교재는 순서를 지키므로, 순서 제약으로 막힌 항목 뒤의 같은 교재 항목도 그 때문에 배정되지 못한다
+    const blockedBy = new Map<string, string>();
     for (const entry of queues[track]) {
       const unmet = blockedItems.has(entry.itemId) ? prereq.unmet(entry) : [];
       let reason: UnassignedReason;
       let detail: string;
+      const waitingFor = blockedBy.get(entry.textbookId);
       if (unmet.length > 0) {
         reason = 'prerequisite';
         const names = unmet.map((id) => items.get(id)?.item.title ?? id).join(', ');
         detail = `선수 학습 미배정: ${names}`;
+        if (!blockedBy.has(entry.textbookId)) blockedBy.set(entry.textbookId, items.get(entry.itemId)?.item.title ?? entry.itemId);
+      } else if (waitingFor) {
+        reason = 'prerequisite';
+        detail = `같은 교재의 앞 항목 '${waitingFor}'이(가) 순서 제약으로 막혀 함께 배정하지 못함`;
       } else if (!anyBudgetAhead && lessons.slice(startIndex).some((l) => (l.status === 'scheduled' || l.status === 'makeup') && l.fixedMinutes > 0)) {
         reason = 'fixed_conflict';
         detail = '남은 수업의 가능시간이 고정 일정으로 모두 소진됨';

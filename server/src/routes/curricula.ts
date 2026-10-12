@@ -8,18 +8,33 @@ const TRACKS = ['current', 'review', 'advance'];
 const ACTIVITIES = ['new', 'practice', 'review', 'assessment', 'homework'];
 const MODES = ['sequential', 'parallel', 'supplement'];
 
-function normalizeEntry(raw: unknown, textbooks: Map<string, Textbook>): SessionEntry {
-  const r = (raw ?? {}) as Record<string, unknown>;
+function normalizeEntry(raw: unknown, textbooks: Map<string, Textbook>, refs: CurriculumTextbookRef[] = []): SessionEntry {
+  if (!raw || typeof raw !== 'object') throw new HttpError(400, '차시 배치 항목의 형식이 올바르지 않습니다.');
+  const r = raw as Record<string, unknown>;
   const textbookId = str(r.textbookId);
   const itemId = str(r.itemId);
   const tb = textbooks.get(textbookId);
   if (!tb) throw new HttpError(400, `과정에 포함되지 않은 교재를 참조합니다: ${textbookId}`);
   const item = tb.items.find((i) => i.id === itemId);
   if (!item) throw new HttpError(400, `교재 '${tb.title}'에 없는 학습항목을 참조합니다: ${itemId}`);
+  // 과정의 교재 사용 범위(포함·제외 항목) 안의 항목이어야 한다
+  const ref = refs.find((x) => x.textbookId === textbookId);
+  if (ref && ((ref.includedItemIds && !ref.includedItemIds.includes(itemId)) || ref.excludedItemIds.includes(itemId))) {
+    throw new HttpError(400, `'${item.title}'은(는) 과정에서 사용하지 않기로 한 항목입니다. 교재 사용 범위를 고치거나 배치에서 빼세요.`);
+  }
   const portionRaw = r.portion as { from?: unknown; to?: unknown } | undefined;
   const portion = portionRaw && typeof portionRaw.from === 'number' && typeof portionRaw.to === 'number' ? { from: portionRaw.from, to: portionRaw.to } : undefined;
+  if (portion) {
+    // 배치 범위는 항목 범위 안의 정수 구간이어야 한다 (밖이면 진도가 100%를 넘고, 뒤집히면 완료할 수 없다)
+    const okInt = Number.isInteger(portion.from) && Number.isInteger(portion.to) && portion.from <= portion.to;
+    const inRange = !item.range || (portion.from >= item.range.from && portion.to <= item.range.to);
+    if (!okInt || !inRange) throw new HttpError(400, `'${item.title}' 배치 범위 ${portion.from}~${portion.to}은(는) 항목 범위${item.range ? ` ${item.range.from}~${item.range.to}` : ''} 안에서 시작 ≤ 끝인 정수여야 합니다.`);
+  }
+  if (r.fraction !== undefined && r.fraction !== null && !(typeof r.fraction === 'number' && r.fraction > 0 && r.fraction <= 1)) {
+    throw new HttpError(400, `'${item.title}' 배치 비율은 0보다 크고 1 이하여야 합니다.`);
+  }
   const minutes = num(r.minutes, item.minutes);
-  if (minutes <= 0) throw new HttpError(400, `'${item.title}' 배치 시간은 1분 이상이어야 합니다.`);
+  if (!Number.isInteger(minutes) || minutes <= 0 || minutes > 1000) throw new HttpError(400, `'${item.title}' 배치 시간은 1~1000분 정수여야 합니다.`);
   return {
     id: str(r.id) || genId(),
     textbookId,
@@ -38,7 +53,9 @@ export function normalizeCurriculum(raw: unknown, store: AppContext['store'], ex
   const r = (raw ?? {}) as Record<string, unknown>;
   const title = str(r.title).trim();
   if (!title) throw new HttpError(400, '과정명은 필수입니다.');
-  const refs: CurriculumTextbookRef[] = arr<Record<string, unknown>>(r.textbooks).map((x) => {
+  const refs: CurriculumTextbookRef[] = arr<unknown>(r.textbooks).map((raw) => {
+    if (!raw || typeof raw !== 'object') throw new HttpError(400, '교재 목록의 형식이 올바르지 않습니다.');
+    const x = raw as Record<string, unknown>;
     const tb = store.get<Textbook>('textbook', str(x.textbookId));
     if (!tb) throw new HttpError(400, `교재를 찾을 수 없습니다: ${str(x.textbookId)}`);
     return {
@@ -46,22 +63,39 @@ export function normalizeCurriculum(raw: unknown, store: AppContext['store'], ex
       edition: tb.edition,
       textbookVersion: tb.version,
       role: ['main', 'sub', 'supplement'].includes(str(x.role)) ? (str(x.role) as CurriculumTextbookRef['role']) : 'main',
-      includedItemIds: Array.isArray(x.includedItemIds) ? (x.includedItemIds as string[]) : null,
-      excludedItemIds: arr<string>(x.excludedItemIds),
+      includedItemIds: Array.isArray(x.includedItemIds) ? (x.includedItemIds as unknown[]).filter((v): v is string => typeof v === 'string') : null,
+      excludedItemIds: arr<unknown>(x.excludedItemIds).filter((v): v is string => typeof v === 'string'),
     };
   });
   if (refs.length === 0) throw new HttpError(400, '교재를 1개 이상 선택하세요.');
   const textbooks = new Map(refs.map((ref) => [ref.textbookId, store.get<Textbook>('textbook', ref.textbookId)!]));
+  // 항목 id 는 교재마다 따로 정해지므로, 한 과정에 넣은 두 교재가 같은 항목 id 를 쓰면 진도 집계가 섞인다
+  const seenItem = new Map<string, string>();
+  for (const tb of textbooks.values()) {
+    for (const it of tb.items) {
+      const other = seenItem.get(it.id);
+      if (other && other !== tb.id) throw new HttpError(400, `교재 '${tb.title}'과(와) 다른 교재가 같은 학습항목 id(${it.id})를 씁니다. 한쪽 교재를 복제해 새 id 로 만든 뒤 쓰세요.`);
+      seenItem.set(it.id, tb.id);
+    }
+  }
   const sessions: CurriculumSession[] = renumber(
-    arr<Record<string, unknown>>(r.sessions).map((s, i) => ({
+    arr<unknown>(r.sessions).map((raw, i) => {
+      if (!raw || typeof raw !== 'object') throw new HttpError(400, '차시 목록의 형식이 올바르지 않습니다.');
+      return raw as Record<string, unknown>;
+    }).map((s, i) => ({
       id: str(s.id) || genId(),
       order: num(s.order, i + 1),
       title: str(s.title) || `${i + 1}차시`,
-      entries: arr(s.entries).map((e) => normalizeEntry(e, textbooks)),
+      entries: arr(s.entries).map((e) => normalizeEntry(e, textbooks, refs)),
       marker: ['review', 'assessment', 'buffer'].includes(str(s.marker)) ? (str(s.marker) as CurriculumSession['marker']) : undefined,
     })),
   );
-  const unassignedEntries = arr(r.unassignedEntries).map((e) => normalizeEntry(e, textbooks));
+  const unassignedEntries = arr(r.unassignedEntries).map((e) => normalizeEntry(e, textbooks, refs));
+  // 차시·배치 id 는 과정 안에서 하나씩이어야 한다 (같은 id 면 옮기기·합치기·기록 연결이 엉킨다)
+  const sessionIds = sessions.map((s) => s.id);
+  if (new Set(sessionIds).size !== sessionIds.length) throw new HttpError(400, '차시 id 가 중복됩니다.');
+  const entryIds = [...sessions.flatMap((s) => s.entries), ...unassignedEntries].map((e) => e.id);
+  if (new Set(entryIds).size !== entryIds.length) throw new HttpError(400, '배치 항목 id 가 중복됩니다.');
   const adv = r.advance as Record<string, unknown> | undefined;
   const advance: Curriculum['advance'] | undefined = adv
     ? {

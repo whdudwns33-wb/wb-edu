@@ -126,6 +126,13 @@ export function autoAssemble(
         queue.splice(j, 1);
         continue;
       }
+      // 나눌 수 있어도 한 단위(쪽·강) 분량이 회당 시간보다 크면 어느 차시에도 들어가지 않는다.
+      // 이 항목만 미배정으로 두고 뒤 항목은 계속 배치한다 (편성 엔진과 같은 기준)
+      if (it && canSplit && isRangedUnit(it.progressUnit) && span && Math.ceil(e.minutes / rangeCount(span)) > budget) {
+        unassigned.push(e);
+        queue.splice(j, 1);
+        continue;
+      }
       if (it && canSplit && remaining >= 5) {
         const ranged = isRangedUnit(it.progressUnit);
         if (ranged) {
@@ -215,11 +222,19 @@ export function moveEntry(c: Curriculum, entryId: string, toSessionId: string | 
   if (toSessionId === null) {
     unassigned = [...unassigned, found];
   } else {
-    const target = sessions.find((s) => s.id === toSessionId);
-    if (!target) return c;
-    const entries = [...target.entries];
-    entries.splice(toIndex ?? entries.length, 0, found);
-    target.entries = entries;
+    if (!sessions.some((s) => s.id === toSessionId)) return c;
+    // 대상 차시는 새 객체로 만든다 (입력 과정의 차시를 바꾸지 않게)
+    const moved = found;
+    return {
+      ...c,
+      sessions: sessions.map((s) => {
+        if (s.id !== toSessionId) return s;
+        const entries = [...s.entries];
+        entries.splice(toIndex ?? entries.length, 0, moved);
+        return { ...s, entries };
+      }),
+      unassignedEntries: unassigned,
+    };
   }
   return { ...c, sessions, unassignedEntries: unassigned };
 }
@@ -227,33 +242,42 @@ export function moveEntry(c: Curriculum, entryId: string, toSessionId: string | 
 /** 항목 분할 (분할 가능 항목만). 범위형은 at 위치(포함)까지 앞부분, 수량형은 분 단위 */
 export function splitEntry(c: Curriculum, entryId: string, item: LearningItem, firstMinutes: number, idGen?: () => string): Curriculum {
   if (!item.splittable) throw new Error('분할할 수 없는 항목입니다.');
-  const sessions = c.sessions.map((s) => {
-    const idx = s.entries.findIndex((e) => e.id === entryId);
-    if (idx < 0) return s;
-    const e = s.entries[idx];
-    let first: SessionEntry;
-    let rest: SessionEntry;
-    if (isRangedUnit(item.progressUnit) && e.portion) {
-      const sp = splitRangeByMinutes(e.portion, e.minutes, firstMinutes);
+  const splitOne = (e: SessionEntry): [SessionEntry, SessionEntry] => {
+    const span = e.portion ?? item.range;
+    if (isRangedUnit(item.progressUnit) && span) {
+      const sp = splitRangeByMinutes(span, e.minutes, firstMinutes);
       if (!sp) throw new Error('더 이상 나눌 수 없습니다.');
-      first = { ...e, portion: sp.first, minutes: sp.firstMinutes };
-      rest = { ...e, id: gen(idGen), portion: sp.rest, minutes: sp.restMinutes };
-    } else {
-      if (firstMinutes <= 0 || firstMinutes >= e.minutes) throw new Error('분할 시간이 범위를 벗어났습니다.');
-      const totalF = e.fraction ?? 1;
-      const fr = Number(((firstMinutes / e.minutes) * totalF).toFixed(4));
-      first = { ...e, minutes: firstMinutes, fraction: fr };
-      rest = { ...e, id: gen(idGen), minutes: e.minutes - firstMinutes, fraction: Number((totalF - fr).toFixed(4)) };
+      return [
+        { ...e, portion: sp.first, minutes: sp.firstMinutes },
+        { ...e, id: gen(idGen), portion: sp.rest, minutes: sp.restMinutes },
+      ];
     }
-    const entries = [...s.entries];
-    entries.splice(idx, 1, first, rest);
-    return { ...s, entries };
-  });
-  return { ...c, sessions };
+    if (firstMinutes <= 0 || firstMinutes >= e.minutes) throw new Error('분할 시간이 범위를 벗어났습니다.');
+    const totalF = e.fraction ?? 1;
+    const fr = Number(((firstMinutes / e.minutes) * totalF).toFixed(4));
+    return [
+      { ...e, minutes: firstMinutes, fraction: fr },
+      { ...e, id: gen(idGen), minutes: e.minutes - firstMinutes, fraction: Number((totalF - fr).toFixed(4)) },
+    ];
+  };
+  const replaceIn = (list: SessionEntry[]): SessionEntry[] => {
+    const idx = list.findIndex((e) => e.id === entryId);
+    if (idx < 0) return list;
+    const entries = [...list];
+    entries.splice(idx, 1, ...splitOne(list[idx]));
+    return entries;
+  };
+  const found = c.sessions.some((s) => s.entries.some((e) => e.id === entryId)) || c.unassignedEntries.some((e) => e.id === entryId);
+  if (!found) throw new Error('나눌 항목을 찾을 수 없습니다.');
+  return { ...c, sessions: c.sessions.map((s) => ({ ...s, entries: replaceIn(s.entries) })), unassignedEntries: replaceIn(c.unassignedEntries) };
 }
 
 /** 같은 항목의 연속 조각 묶기 */
 export function mergeEntries(c: Curriculum, entryIdA: string, entryIdB: string): Curriculum {
+  // 두 조각이 같은 차시에 있어야 한다 (다른 차시면 아무 일도 하지 않은 채 끝나지 않고 알린다)
+  if (!c.sessions.some((s) => s.entries.some((e) => e.id === entryIdA) && s.entries.some((e) => e.id === entryIdB))) {
+    throw new Error('같은 차시 안의 두 조각만 묶을 수 있습니다. 먼저 한 차시로 옮기세요.');
+  }
   const sessions = c.sessions.map((s) => {
     const ia = s.entries.findIndex((e) => e.id === entryIdA);
     const ib = s.entries.findIndex((e) => e.id === entryIdB);
@@ -261,6 +285,13 @@ export function mergeEntries(c: Curriculum, entryIdA: string, entryIdB: string):
     const a = s.entries[ia];
     const b = s.entries[ib];
     if (a.itemId !== b.itemId) throw new Error('같은 학습항목의 조각만 묶을 수 있습니다.');
+    // 새 학습과 그 복습처럼 활동·트랙이 다르면 묶지 않는다 (한쪽이 사라진다)
+    if (a.activity !== b.activity || a.track !== b.track) throw new Error('활동·트랙이 같은 조각만 묶을 수 있습니다.');
+    // 범위는 바로 이어져야 한다 (12~15와 20~23을 묶으면 사이의 16~19까지 들어가 두 번 배치된다)
+    if (a.portion && b.portion) {
+      const [lo, hi] = a.portion.from <= b.portion.from ? [a.portion, b.portion] : [b.portion, a.portion];
+      if (hi.from !== lo.to + 1) throw new Error(`이어진 범위만 묶을 수 있습니다 (${lo.from}~${lo.to}, ${hi.from}~${hi.to}).`);
+    }
     const merged: SessionEntry = {
       ...a,
       minutes: a.minutes + b.minutes,

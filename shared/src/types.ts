@@ -449,6 +449,12 @@ export interface PlanSnapshot {
     items: LearningItem[];
   }>;
   advance?: AdvanceSettings;
+  /**
+   * 과정의 일부만 계획한 경우의 선택 (스냅샷 갱신 때 다시 적용).
+   * assumedDone: 선택 범위 앞 차시의 배치 분량. 이미 배운 것으로 보고 선수 조건 판단에 쓴다
+   *   (한 항목이 앞 차시와 선택 범위에 나뉘어 있으면 앞 차시 쪽 분량만 배운 것으로 본다).
+   */
+  selection?: { fromSessionOrder?: number; toSessionOrder?: number; includeItemIds?: string[]; assumedDone: Array<{ itemId: string; portion?: ItemRange; fraction?: number }> };
 }
 
 export type RecordStatus = 'done' | 'partial' | 'not_done' | 'excluded';

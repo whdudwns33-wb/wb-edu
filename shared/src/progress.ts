@@ -118,6 +118,11 @@ export function itemCompletion(plan: Plan, itemId: string): ItemCompletion | nul
   }
 
   if (ranged) {
+    const clip = (rs: ItemRange[]) =>
+      rs.map((r) => ({ from: Math.max(r.from, item.range!.from), to: Math.min(r.to, item.range!.to) })).filter((r) => r.from <= r.to);
+    completedRanges.splice(0, completedRanges.length, ...clip(completedRanges));
+    plannedRanges.splice(0, plannedRanges.length, ...clip(plannedRanges));
+    excludedRanges.splice(0, excludedRanges.length, ...clip(excludedRanges));
     const completedN = normalizeRanges(completedRanges);
     const remaining = subtractRanges(item.range!, [...completedN, ...excludedRanges]);
     return {

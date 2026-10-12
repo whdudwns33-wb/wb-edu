@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
-import type { LearningItem, Plan, Textbook } from '@wb/shared';
-import { MIN_DIFF_RATIO, MIN_SAMPLES, previewImport, isRangedUnit, PROGRESS_UNIT_LABEL, timingSuggestions } from '@wb/shared';
+import type { Curriculum, LearningItem, Plan, Textbook } from '@wb/shared';
+import { MIN_DIFF_RATIO, MIN_SAMPLES, previewImport, isRangedUnit, PROGRESS_UNIT_LABEL, subtractRanges, timingSuggestions } from '@wb/shared';
 import type { AppContext } from '../context.ts';
 import { canAccessPlan } from './plans.ts';
 import { HttpError, arr, bool, expectVersion, genId, newMeta, num, requireAdmin, requireUser, str, touched } from '../context.ts';
@@ -13,6 +13,7 @@ export function normalizeItem(raw: unknown, idx: number): LearningItem {
   const rangeRaw = r.range as { from?: unknown; to?: unknown } | undefined;
   let range: LearningItem['range'];
   if (rangeRaw && typeof rangeRaw.from === 'number' && typeof rangeRaw.to === 'number') {
+    if (!Number.isInteger(rangeRaw.from) || !Number.isInteger(rangeRaw.to) || rangeRaw.from < 0) throw new HttpError(400, `${idx + 1}번 항목: 범위는 0 이상의 정수여야 합니다.`);
     if (rangeRaw.to < rangeRaw.from) throw new HttpError(400, `${idx + 1}번 항목: 범위의 끝이 시작보다 작습니다.`);
     range = { from: rangeRaw.from, to: rangeRaw.to };
   }
@@ -62,7 +63,23 @@ export function normalizeTextbook(raw: unknown, existing?: Textbook): Omit<Textb
   }
   for (const it of items) {
     if (it.prerequisiteItemIds.includes(it.id)) throw new HttpError(400, `'${it.title}'은(는) 자기 자신을 선수 학습으로 가질 수 없습니다.`);
+    const unknown = it.prerequisiteItemIds.filter((p) => !ids.has(p));
+    if (unknown.length) throw new HttpError(400, `'${it.title}'의 선수 학습에 이 교재에 없는 항목이 있습니다: ${unknown.join(', ')}`);
   }
+  // 선수 관계가 돌고 돌면(가→나→가) 어느 항목도 먼저 배정할 수 없어, 편성에서 모두 '시간 부족'처럼 보인다
+  const byId = new Map(items.map((it) => [it.id, it]));
+  const state = new Map<string, 1 | 2>();
+  const visit = (id: string, path: string[]): void => {
+    if (state.get(id) === 2) return;
+    if (state.get(id) === 1) {
+      const cycle = path.slice(path.indexOf(id)).concat(id).map((x) => byId.get(x)?.title ?? x);
+      throw new HttpError(400, `선수 학습 관계가 순환합니다: ${cycle.join(' → ')}`);
+    }
+    state.set(id, 1);
+    for (const p of byId.get(id)?.prerequisiteItemIds ?? []) visit(p, [...path, id]);
+    state.set(id, 2);
+  };
+  for (const it of items) visit(it.id, []);
   const verification = ['unverified', 'reviewing', 'verified'].includes(str(r.verification)) ? (str(r.verification) as Textbook['verification']) : 'unverified';
   const defaultUnit = UNITS.includes(str(r.defaultUnit)) ? (str(r.defaultUnit) as Textbook['defaultUnit']) : items[0]?.progressUnit ?? 'page';
   return {
@@ -81,7 +98,7 @@ export function normalizeTextbook(raw: unknown, existing?: Textbook): Omit<Textb
     verification,
     usageNote: str(r.usageNote),
     pdfPageOffset: num(r.pdfPageOffset, 0),
-    excludedRanges: arr<Record<string, unknown>>(r.excludedRanges).map((x) => ({
+    excludedRanges: arr<unknown>(r.excludedRanges).filter((x): x is Record<string, unknown> => !!x && typeof x === 'object').map((x) => ({
       id: str(x.id) || genId(),
       label: str(x.label),
       range: { from: num((x.range as Record<string, unknown>)?.from), to: num((x.range as Record<string, unknown>)?.to) },
@@ -89,6 +106,39 @@ export function normalizeTextbook(raw: unknown, existing?: Textbook): Omit<Textb
     items,
     defaultUnit,
   };
+}
+
+/**
+ * 교재를 고쳤을 때 이 교재를 쓰는 과정(보관 제외)과 맞는지 본다.
+ *  - 막음: 과정이 쓰는 항목을 지움 / 과정의 배치 범위가 새 항목 범위를 벗어남 (그대로 두면 계획이 없는 항목을 배정하거나 진도가 100%를 넘는다)
+ *  - 알림: 항목 범위가 넓어져 과정의 배치가 새 범위를 다 덮지 못함 (늘어난 쪽은 과정을 고쳐야 배정된다)
+ */
+export function curriculumUsage(store: AppContext['store'], textbookId: string, items: LearningItem[]): { blockers: string[]; warnings: string[] } {
+  const byId = new Map(items.map((it) => [it.id, it]));
+  const blockers: string[] = [];
+  const warnings: string[] = [];
+  for (const c of store.list<Curriculum>('curriculum')) {
+    if (!c.textbooks.some((ref) => ref.textbookId === textbookId)) continue;
+    const entries = [...c.sessions.flatMap((s) => s.entries), ...c.unassignedEntries].filter((e) => e.textbookId === textbookId);
+    const covered = new Map<string, Array<{ from: number; to: number }>>();
+    for (const e of entries) {
+      const it = byId.get(e.itemId);
+      if (!it) {
+        blockers.push(`과정 '${c.title}'이(가) 지우려는 항목(${e.itemId})을 씁니다.`);
+        continue;
+      }
+      if (e.portion && it.range && (e.portion.from < it.range.from || e.portion.to > it.range.to)) {
+        blockers.push(`과정 '${c.title}'의 '${it.title}' 배치(${e.portion.from}~${e.portion.to})가 새 범위(${it.range.from}~${it.range.to}) 밖입니다.`);
+      }
+      if (e.activity === 'new' && it.range) covered.set(it.id, [...(covered.get(it.id) ?? []), e.portion ?? it.range]);
+    }
+    for (const [itemId, rs] of covered) {
+      const it = byId.get(itemId)!;
+      const missing = subtractRanges(it.range!, rs);
+      if (missing.length) warnings.push(`과정 '${c.title}'의 '${it.title}' 배치가 ${missing.map((r) => `${r.from}~${r.to}`).join(', ')}을(를) 다루지 않습니다. 과정에서 배치를 고치세요.`);
+    }
+  }
+  return { blockers: [...new Set(blockers)], warnings: [...new Set(warnings)] };
 }
 
 export function registerTextbookRoutes(app: FastifyInstance, ctx: AppContext) {
@@ -123,10 +173,12 @@ export function registerTextbookRoutes(app: FastifyInstance, ctx: AppContext) {
     const existing = store.mustGet<Textbook>('textbook', id);
     const version = expectVersion(req.body);
     const base = normalizeTextbook(req.body, existing);
+    const { blockers, warnings } = curriculumUsage(store, id, base.items);
+    if (blockers.length) throw new HttpError(400, '이 교재를 쓰는 과정과 맞지 않아 저장하지 않았습니다. 과정에서 해당 배치를 먼저 고치거나 빼세요.', blockers.slice(0, 30));
     const doc: Textbook = touched({ ...existing, ...base, id, isSample: bool((req.body as Record<string, unknown>).isSample, existing.isSample), archived: bool((req.body as Record<string, unknown>).archived, existing.archived) }, user, ctx.now());
     const saved = store.update('textbook', doc, version);
     store.audit({ at: doc.updatedAt, userId: user.id, kind: 'textbook', docId: id, action: 'update', detail: doc.title });
-    return saved;
+    return warnings.length ? { ...saved, warnings } : saved;
   });
 
   app.post('/api/textbooks/:id/archive', async (req) => {
