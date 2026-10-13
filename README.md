@@ -69,6 +69,8 @@ npm run backup:prod
 
 학원 PC 한 대에 배포하는 순서(`npm run setup:prod` → 첫 실행 → 작업 스케줄러 등록)는 [docs/배포-가이드.md](docs/배포-가이드.md)의 'A 구성 따라 하기'에 있습니다. 운영 모드로 창 없이 실행하면 기록은 `server/data/logs/`에 남습니다(`WB_LOG_DIR`로 변경).
 
+현재 운영 주소는 [planner.wbcowork.com](https://planner.wbcowork.com)입니다. 서버와 운영 DB는 학원 PC `WB1`의 `C:\Users\wb\wb-edu`에 있고, 기존 Cloudflare 터널이 외부 HTTPS 요청을 `127.0.0.1:3987`로 연결합니다. 이 PC의 서버·Cloudflare 연결기가 실행 중이고 인터넷에 연결되어 있어야 외부에서 사용할 수 있습니다.
+
 시범 운영 절차는 [docs/시범운영-가이드.md](docs/시범운영-가이드.md), 피드백 기록은 [docs/시범운영-피드백.md](docs/시범운영-피드백.md), 교재 목차 붙여넣기 양식은 [docs/templates/학습항목-붙여넣기-양식.tsv](docs/templates/학습항목-붙여넣기-양식.tsv)를 보세요.
 
 ## 테스트

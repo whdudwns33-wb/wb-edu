@@ -16,6 +16,7 @@ Node 22.13 이상 필요(내장 `node:sqlite` 사용, 네이티브 모듈 없음
 **이 저장소가 있는 PC(C:\Users\wb\wb-edu)는 실제 학원 PC이며 운영 서버가 돌고 있다 (2026-10-13 배포).**
 - 운영 서버: 작업 스케줄러 'WB Planner Server'가 로그온 시 창 없이 실행, http://127.0.0.1:3987, 운영 DB `server/data/wb-edu.sqlite`, 기록 `server/data/logs/`.
 - 매일 23:00 'WB Planner Backup'이 운영 DB를 `server/data/backups/`에 백업.
+- 외부 접속은 `https://planner.wbcowork.com` → 기존 Cloudflare 터널 `wb-apps-wb1` → 이 PC의 `http://127.0.0.1:3987`이다. 기존 앱 연결 10개와 catch-all 설정을 보존하고 플래너 연결만 추가했다. 로컬·외부 접속은 같은 운영 DB를 쓴다.
 - 개발·확인용 데모 서버는 3988 포트로 띄운다: `npm run start:demo` (`.claude/launch.json`도 3988). `npm start`(3987)는 이 PC에서 운영 서버와 포트가 겹친다.
 - 운영 DB·`.env.prod`·작업 스케줄러는 사용자 요청 없이 건드리지 않는다. 테스트는 메모리 DB나 데모 DB, 또는 `WB_ENV_FILE`로 지정한 임시 환경에서 한다.
 - 코드를 바꿔 운영에 반영할 때는 배포 가이드의 '업데이트 절차'(backup:prod → build → `deploy\windows\server-control.ps1 restart`)를 따른다. `Stop-ScheduledTask`만으로는 서버 프로세스가 남아 포트를 쥔다.
@@ -82,9 +83,9 @@ npm run typecheck
 
 ### 1. 사용자 결정·자료가 필요한 것 (에이전트가 혼자 할 수 없음)
 
-- **배포**: A 구성(학원 PC 한 대)으로 이 PC에 배포했다(2026-10-13). 작업 등록·첫 실행·백업 작업까지 확인. 사용자가 할 일: 초기 관리자 비밀번호(`.env.prod`)로 로그인해 비밀번호 바꾸기, `.env.prod`의 `WB_ADMIN_PASSWORD` 줄 지우기, 강사 계정 만들기, 휴일 확인.
+- **배포**: 이 PC에서 로컬·Cloudflare 외부 접속으로 운영한다(2026-10-13). 작업 등록·백업·서버 재시작·로컬 및 외부 관리자 로그인 확인. 비밀번호와 운영 자료는 배포 과정에서 바꾸지 않았다. 계정·휴일 관리는 사용자가 앱에서 한다.
 - **운영 관리자 비밀번호**: `setup:prod`가 무작위로 만든 초기값을 첫 로그인 뒤 앱에서 바꾼다 (`.env.prod`는 git에 올라가지 않음).
-- **도메인·HTTPS**: C 구성이면 `deploy/Caddyfile.example` 기준으로 설정.
+- **도메인·HTTPS**: `planner.wbcowork.com`은 기존 Cloudflare 터널로 HTTPS 접속한다. 서버의 `HOST=127.0.0.1`을 유지하며 별도 Caddy는 실행하지 않는다. 로그인 쿠키는 `x-forwarded-proto=https` 요청에서 Secure를 적용한다.
 - **시범 운영 자료**: 실제 교재 목차, 반 시간표(요일·시간·기간), 휴일. 절차는 [docs/시범운영-가이드.md](docs/시범운영-가이드.md), 의견 기록은 `docs/시범운영-피드백.md`.
 
 ### 2. 구현은 되어 있으나 실제 환경에서 확인하지 못한 것
