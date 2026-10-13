@@ -17,7 +17,7 @@ Node 22.13 이상 필요(내장 `node:sqlite` 사용, 네이티브 모듈 없음
 - 매일 23:00 'WB Planner Backup'이 운영 DB를 `server/data/backups/`에 백업.
 - 개발·확인용 데모 서버는 3988 포트로 띄운다: `npm run start:demo` (`.claude/launch.json`도 3988). `npm start`(3987)는 이 PC에서 운영 서버와 포트가 겹친다.
 - 운영 DB·`.env.prod`·작업 스케줄러는 사용자 요청 없이 건드리지 않는다. 테스트는 메모리 DB나 데모 DB, 또는 `WB_ENV_FILE`로 지정한 임시 환경에서 한다.
-- 코드를 바꿔 운영에 반영할 때는 배포 가이드의 '업데이트 절차'(backup:prod → build → 서버 작업 재시작)를 따른다.
+- 코드를 바꿔 운영에 반영할 때는 배포 가이드의 '업데이트 절차'(backup:prod → build → `deploy\windows\server-control.ps1 restart`)를 따른다. `Stop-ScheduledTask`만으로는 서버 프로세스가 남아 포트를 쥔다.
 
 ```bash
 npm install

@@ -28,6 +28,8 @@ $backupTask = 'WB Planner Backup'
 $shortcut = Join-Path ([Environment]::GetFolderPath('Desktop')) 'WB 커리큘럼 플래너.url'
 
 if ($Remove) {
+  # 작업을 멈춰도 서버(node) 프로세스는 남으므로 서버 정리 스크립트로 먼저 끈다
+  & (Join-Path $PSScriptRoot 'server-control.ps1') stop
   foreach ($t in @($serverTask, $backupTask)) {
     if (Get-ScheduledTask -TaskName $t -ErrorAction SilentlyContinue) {
       Stop-ScheduledTask -TaskName $t -ErrorAction SilentlyContinue
@@ -73,6 +75,6 @@ if (-not $NoShortcut) {
 }
 
 Write-Host ''
-Write-Host '지금 바로 서버를 시작하려면:  Start-ScheduledTask -TaskName "WB Planner Server"'
+Write-Host '서버 켜기·끄기·다시 시작:     powershell -ExecutionPolicy Bypass -File deploy\windows\server-control.ps1 start|stop|restart|status'
 Write-Host '상태 확인:                     Get-ScheduledTask -TaskName "WB Planner*" | Get-ScheduledTaskInfo'
 Write-Host '백업이 되는지 바로 확인:       Start-ScheduledTask -TaskName "WB Planner Backup"  (server\data\backups 에 파일 생성)'

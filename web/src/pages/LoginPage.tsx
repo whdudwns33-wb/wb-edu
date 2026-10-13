@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth.tsx';
 import { errorMessage } from '../api.ts';
@@ -12,6 +12,14 @@ export function LoginPage() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  // 데모 기본 계정 안내는 데모 서버에서만 보인다 (운영에서는 틀린 안내이고 관리자 아이디를 드러낸다)
+  const [demo, setDemo] = useState(false);
+  useEffect(() => {
+    fetch('/api/health')
+      .then((r) => r.json())
+      .then((h: { mode?: string }) => setDemo(h.mode === 'demo'))
+      .catch(() => setDemo(false));
+  }, []);
 
   if (!loading && user) return <Navigate to={(loc.state as { from?: string })?.from ?? '/plans'} replace />;
 
@@ -48,7 +56,9 @@ export function LoginPage() {
             로그인
           </button>
         </div>
-        <p className="muted small mt">계정은 관리자가 만듭니다. 데모 환경 기본 계정: admin / admin1234 (샘플 시드 시 teacher / teacher1234)</p>
+        <p className="muted small mt">
+          계정은 관리자가 만듭니다.{demo && ' 데모 환경 기본 계정: admin / admin1234 (샘플 시드 시 teacher / teacher1234)'}
+        </p>
       </form>
     </div>
   );

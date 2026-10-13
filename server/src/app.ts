@@ -50,7 +50,8 @@ export async function buildApp(opts: BuildOptions): Promise<{ app: FastifyInstan
     return reply.code(status).send({ error: status >= 500 ? '서버 오류가 발생했습니다.' : e.message });
   });
 
-  app.get('/api/health', async () => ({ ok: true, time: ctx.now() }));
+  // mode: 화면이 데모 안내(기본 계정 등)를 운영에서 보이지 않게 하는 데 쓴다
+  app.get('/api/health', async () => ({ ok: true, time: ctx.now(), mode: process.env.WB_MODE === 'prod' ? 'prod' : 'demo' }));
 
   registerUserRoutes(app, ctx);
   registerTextbookRoutes(app, ctx);
