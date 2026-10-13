@@ -85,6 +85,7 @@ npm run typecheck
 - [docs/테스트결과.md](docs/테스트결과.md) — 자동·실제 테스트 결과, 화면 예시
 - [docs/시범운영-가이드.md](docs/시범운영-가이드.md) — 실제 교재로 시범 운영하는 절차
 - [docs/배포-가이드.md](docs/배포-가이드.md) — 자동 시작·자동 백업(Windows 작업 스케줄러), HTTPS 프록시(Caddy), 업데이트·복구
+- [AGENTS.md](AGENTS.md) — 이어서 작업하는 코딩 에이전트(Codex 등)용 안내: 명령, 구조, 지켜야 할 규칙, 남은 작업
 
 ## 주요 메뉴
 

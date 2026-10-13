@@ -1,0 +1,107 @@
+# AGENTS.md — WB 커리큘럼 플래너 작업 안내 (Codex·다른 에이전트용)
+
+이 파일은 이 저장소에서 이어서 작업하는 코딩 에이전트를 위한 안내다. 사람용 설명은 [README.md](README.md)와 [docs/](docs/)에 있다.
+
+## 현재 상태 (2026-10-13)
+
+- 요구사항 v1.0 범위의 기능은 모두 구현되어 있다. 자동 테스트 197건 통과(shared 135 + server API 62), 타입 검사·웹 빌드 오류 없음.
+- 독립 코드 리뷰를 네 차례 했고 재현된 결함은 모두 고쳤다. 경과와 근거는 [docs/테스트결과.md](docs/테스트결과.md) (5·9·11·12차).
+- 남은 일은 대부분 사용자 결정·실제 자료·실제 기기 확인이 필요하다. 아래 '남은 작업' 참고.
+
+## 실행·검증 명령
+
+Node 22.13 이상 필요(내장 `node:sqlite` 사용, 네이티브 모듈 없음). 포트 3987.
+
+```bash
+npm install
+```
+
+```bash
+npm run seed:sample
+```
+
+```bash
+npm run build
+```
+
+```bash
+npm start
+```
+
+```bash
+npm test
+```
+
+```bash
+npm run typecheck
+```
+
+- 데모 계정: admin/admin1234, teacher/teacher1234 (데모 DB `server/data/wb-edu.demo.sqlite`에만 있음).
+- 운영 모드: `.env.prod.example`을 `.env.prod`로 복사해 값을 채우고 `npm run start:prod`. 운영 DB는 `server/data/wb-edu.sqlite`로 데모와 분리된다.
+- 백업: `npm run backup` (SQLite `VACUUM INTO`, `server/data/backups/`).
+- 변경을 마치기 전에 반드시 `npm test`, `npm run typecheck`, `npm run build -w web`을 모두 통과시킨다.
+
+## 구조
+
+- `shared/src` — 순수 TypeScript 도메인 로직. 편성 엔진(`scheduler.ts`), 진도 집계(`progress.ts`), 5종 보기(`views.ts`), 출력 열 정의(`output.ts`), 과정 조립(`assembler.ts`), 표·목차 가져오기(`importer.ts`, `toc.ts`), 달력(`ical.ts`), 날짜(`dates.ts`, 한국 시간 기준).
+- `server/src` — Fastify 5 + `node:sqlite`. 문서는 `docs` 테이블에 JSON으로 저장하고 `version`으로 낙관적 동시성 제어(다르면 409). 라우트는 `routes/*.ts`, 엑셀은 `export.ts`.
+- `web/src` — Vite 7 + React 19 + react-router 7. 화면은 `pages/*.tsx`, 공용 UI·훅은 `components/ui.tsx`.
+- 테스트: `shared/test/*.test.ts`, `server/test/api.test.ts` (메모리 DB로 서버를 띄워 `app.inject`). vitest 설정은 이 두 폴더만 포함한다.
+- 문서: `docs/편성규칙.md`(규칙의 기준), `docs/데이터구조.md`, `docs/가정과제한.md`, `docs/테스트결과.md`, `docs/배포-가이드.md`, `docs/시범운영-가이드.md`.
+
+## 지켜야 할 규칙
+
+- 화면 문구·오류 메시지·문서·코드 주석은 한국어로 쓴다. 사용자는 한국어로 소통한다.
+- 외부 AI·유료 API를 쓰지 않는다. 글자 인식(tesseract.js)도 앱 안의 데이터로 브라우저에서만 처리한다.
+- 실제 학생 정보나 기존 서비스 데이터를 넣지 않는다. 샘플은 가상이며 제목에 `[가상]`과 `isSample` 표시를 붙인다.
+- 실제 진도 기록은 지우지 않는다. 기록은 추가만 하고 배정마다 가장 최근 기록이 유효하다. 일정 연산은 기록·고정 배정을 움직이지 않는다.
+- 저장 API는 `version`을 받아 다르면 409로 거절한다. 예외는 진도 기록·이해 확인의 자동 병합(화면에서 본 배정 `expect`가 같을 때만).
+- 서버 입력은 `server/src/context.ts`의 `str`·`text`·`TEXT_LIMIT`·`HttpError`로 검사한다. 편성 엔진이 거절할 때는 한글 메시지를 가진 일반 `Error`를 던지고, 그것만 400으로 사용자에게 보인다.
+- 시각은 UTC ISO로 저장하고 화면에는 `formatKST`(shared/dates.ts)로 보인다. '오늘'은 `todayKST()`.
+- 화면과 인쇄·엑셀은 같은 집계(`buildPlanViews`)와 같은 열 정의(`output.ts`)를 쓴다. 한쪽만 고치지 않는다.
+- 결함을 고치면 재현 테스트를 함께 넣고, `docs/테스트결과.md`에 차수를 이어 기록한다. 규칙이 바뀌면 `docs/편성규칙.md`도 고친다.
+- 운영 배포, 외부 전송, 유료 가입, 시스템 설정 변경(작업 스케줄러 등록 등)은 사용자가 직접 하거나 명시적으로 승인한 뒤에만 한다.
+
+## 함정
+
+- Windows 환경이다. 줄바꿈은 `.gitattributes`로 LF 고정.
+- 글자 인식 자산(`web/public/ocr/`)은 git에 없고 `predev`·`prebuild` 때 `scripts/copy-ocr-assets.mjs`가 복사한다.
+- 서버는 `tsx`로 소스를 바로 실행한다(별도 서버 빌드 없음). 웹은 `npm run build -w web` 결과(`web/dist`)를 서버가 정적 파일로 낸다. 화면을 고친 뒤 웹을 다시 빌드해야 `npm start` 화면에 반영된다.
+- `web/src/pages/PlanDetailPage.tsx`는 1400줄이 넘는다. 고칠 때 탭별 컴포넌트를 찾아 국소적으로 바꾼다.
+
+## 남은 작업
+
+### 1. 사용자 결정·자료가 필요한 것 (에이전트가 혼자 할 수 없음)
+
+- **배포 구성 선택**: [docs/배포-가이드.md](docs/배포-가이드.md)의 A(학원 PC 한 대)·B(학원 내부 Wi‑Fi)·C(외부 인터넷 + 도메인·HTTPS) 중 결정.
+- **운영 관리자 비밀번호**: `.env.prod` 작성 (git에 올라가지 않음).
+- **자동 시작·매일 백업 등록**: `deploy/windows/register-tasks.ps1`을 운영 PC의 관리자 PowerShell에서 실행.
+- **도메인·HTTPS**: C 구성이면 `deploy/Caddyfile.example` 기준으로 설정.
+- **시범 운영 자료**: 실제 교재 목차, 반 시간표(요일·시간·기간), 휴일. 절차는 [docs/시범운영-가이드.md](docs/시범운영-가이드.md), 의견 기록은 `docs/시범운영-피드백.md`.
+
+### 2. 구현은 되어 있으나 실제 환경에서 확인하지 못한 것
+
+- 작업 스케줄러 등록 스크립트의 실제 등록 (구문 검사만 함).
+- Caddy 리버스 프록시와 인증서 발급.
+- 실제 휴대폰의 손가락 끌어 놓기 (브라우저의 휴대폰 화면 흉내와 터치 이벤트로만 확인).
+- 구글·애플 캘린더가 구독 주소를 주기적으로 받아 가는지 (ical.js 파싱 검증만 함, 인터넷에 열린 서버 필요).
+- 실제 교재 사진·스캔 PDF의 글자 인식 품질 (가상 그림으로만 확인. 영어 단어를 잘못 읽는 경우가 있어 사람이 확인하게 되어 있음).
+
+### 3. 시범 운영 의견을 듣고 정할 후보
+
+- 같은 수업에 한 항목이 두 줄(예: 24~29쪽, 30~33쪽)로 보이는 경우 한 줄로 합쳐 보이기. 과정이 항목을 두 차시에 나눠 둔 경우이며 쪽 중복은 없다.
+- 보충형 과정의 보충 교재(활동 '연습') 완료율 표시. 지금 규칙은 '새 학습'만 완료율에 센다.
+- 비밀번호 찾기, 일반 API 요청 속도 제한, 여러 서버 사이의 로그인 실패 제한 공유.
+- 교재 항목의 '보충 연결(attachToItemId)' 선택 화면 (지금은 id 직접 입력).
+
+### 4. 하지 않기로 판단한 것 (다시 하려면 사용자와 상의)
+
+- 같은 칸 실시간 동시 입력 (CRDT 등 구조 변경 필요).
+- 서버 PDF 생성 (A4 인쇄 보기 → 브라우저 'PDF로 저장'으로 충족).
+
+### 5. 기술 부채 (선택)
+
+- 웹 화면 자동 테스트가 없다. 화면 동작은 브라우저에서 수동으로 확인해 왔다. Playwright 같은 도구 도입 후보.
+- ESLint 설정이 없다(타입 검사만 함).
+- 문서를 SQLite에 JSON으로 저장하는 구조는 소규모(수십 사용자, 수천 계획)를 전제로 한다. 1년 계획 600항목 기준 측정치는 `docs/테스트결과.md` 8차.
+- `PlanDetailPage.tsx` 분할.
