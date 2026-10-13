@@ -9,9 +9,13 @@ import type { AppContext } from './context.ts';
 import { hashPassword } from './auth.ts';
 import { genId } from './context.ts';
 
-export function seedAdmin(ctx: AppContext, username = process.env.WB_ADMIN_USER ?? 'admin', password = process.env.WB_ADMIN_PASSWORD ?? 'admin1234'): { created: boolean; username: string } {
+export function seedAdmin(ctx: AppContext, username = process.env.WB_ADMIN_USER ?? 'admin', password = process.env.WB_ADMIN_PASSWORD ?? (process.env.WB_MODE === 'prod' ? '' : 'admin1234')): { created: boolean; username: string } {
   const { store } = ctx;
   if (store.listUsers().some((u) => u.role === 'admin')) return { created: false, username };
+  if (process.env.WB_MODE === 'prod') {
+    if (!/^[a-zA-Z0-9_.-]{3,32}$/.test(username)) throw new Error('WB_ADMIN_USER는 영문·숫자 3~32자로 지정하세요.');
+    if (password.length < 10 || password.length > 1024 || /여기에|admin1234|password/i.test(password)) throw new Error('운영 관리자 비밀번호를 WB_ADMIN_PASSWORD에 10~1024자 강한 값으로 지정하세요.');
+  }
   store.insertUser({ id: genId(), username, displayName: '관리자', role: 'admin', passwordHash: hashPassword(password), createdAt: ctx.now() });
   return { created: true, username };
 }

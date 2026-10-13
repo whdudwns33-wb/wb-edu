@@ -7,7 +7,7 @@
  *    (WB_LOG_DIR 로 폴더 변경). 터미널에서 실행하면 화면에 그대로 보인다.
  */
 import { spawn } from 'node:child_process';
-import { createWriteStream, existsSync, mkdirSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { ROOT, TSX_CLI, loadProdEnv } from './prod-env.mjs';
 
@@ -20,11 +20,14 @@ if (!interactive) {
   const dir = env.WB_LOG_DIR ? resolve(env.WB_LOG_DIR) : join(ROOT, 'server', 'data', 'logs');
   mkdirSync(dir, { recursive: true });
   const month = new Date().toISOString().slice(0, 7);
-  log = createWriteStream(join(dir, `server-${month}.log`), { flags: 'a' });
+  log = openSync(join(dir, `server-${month}.log`), 'a');
 }
-const say = (msg) => (log ? log.write(`[${new Date().toISOString()}] ${msg}\n`) : console.log(msg));
+const say = (msg) => (log !== null ? appendFileSync(log, `[${new Date().toISOString()}] ${msg}\n`) : console.log(msg));
 const fail = (msg) => {
-  if (log) log.write(`[${new Date().toISOString()}] 오류: ${msg}\n`);
+  if (log !== null) {
+    say(`오류: ${msg}`);
+    closeSync(log);
+  }
   console.error(msg);
   process.exit(1);
 };
@@ -33,7 +36,7 @@ if (loaded) say(`환경 파일 적용: ${file}`);
 if (!existsSync(dbPath) && !env.WB_ADMIN_PASSWORD) {
   fail('운영 DB가 아직 없습니다. 첫 실행에서는 초기 관리자 비밀번호를 WB_ADMIN_PASSWORD 로 지정해야 합니다. 먼저  npm run setup:prod  를 실행하세요.');
 }
-if (!existsSync(join(ROOT, 'web', 'dist', 'index.html'))) {
+if (!existsSync(join(env.WB_STATIC_DIR || join(ROOT, 'web', 'dist'), 'index.html'))) {
   fail('웹앱이 빌드되지 않았습니다. 먼저  npm run build  를 실행하세요.');
 }
 
@@ -41,15 +44,14 @@ say(`운영 모드 시작 · DB: ${dbPath} · 주소: http://${env.HOST ?? '127.
 const child = spawn(process.execPath, [TSX_CLI, join(ROOT, 'server', 'src', 'index.ts')], {
   cwd: join(ROOT, 'server'),
   env,
-  stdio: log ? ['ignore', 'pipe', 'pipe'] : 'inherit',
+  stdio: log !== null ? ['ignore', log, log] : 'inherit',
 });
-if (log) {
-  child.stdout.pipe(log, { end: false });
-  child.stderr.pipe(log, { end: false });
-}
+child.on('error', () => fail('서버 프로세스를 시작하지 못했습니다. Node 설치와 실행 권한을 확인하세요.'));
 // 작업 스케줄러가 작업을 끝내면 서버도 함께 끝낸다
 for (const sig of ['SIGINT', 'SIGTERM', 'SIGBREAK']) process.on(sig, () => child.kill());
-child.on('exit', (code) => {
-  say(`서버 종료 (코드 ${code ?? 0})`);
-  process.exit(code ?? 0);
+child.on('exit', (code, signal) => {
+  const status = code ?? 1;
+  say(`서버 종료 (코드 ${status}${signal ? `, 신호 ${signal}` : ''})`);
+  if (log !== null) closeSync(log);
+  process.exit(status);
 });

@@ -128,6 +128,7 @@ export function TextbookEditorPage() {
   const [importOpen, setImportOpen] = useState(false);
   const { data: settings } = useAsync(() => get<AppSettings>('/api/settings'), []);
   const { data: objectives } = useAsync(() => get<LearningObjective[]>('/api/objectives'), []);
+  const attachments = useAsync(() => get<Textbook[]>('/api/textbooks?archived=1'), [], [doc?.version]);
   const readOnly = user?.role !== 'admin';
   // 마지막으로 불러오거나 저장한 상태 (편집 중인지 판단용)
   const [baseline, setBaseline] = useState('');
@@ -157,6 +158,11 @@ export function TextbookEditorPage() {
     const merged = [...bySubject, ...inhouse];
     return merged.filter((f, i) => merged.findIndex((g) => g.key === f.key) === i);
   }, [settings, doc?.subject, doc?.kind]);
+  const attachmentGroups = useMemo(() => (attachments.data ?? [])
+    .filter((tb) => !tb.archived && tb.id !== doc?.id)
+    .map((tb) => ({ ...tb, items: tb.items.filter((it) => !it.excluded && !doc?.items.some((own) => own.id === it.id)).sort((a, b) => a.order - b.order) }))
+    .filter((tb) => tb.items.length > 0), [attachments.data, doc?.id, doc?.items]);
+  const attachmentIds = new Set(attachmentGroups.flatMap((tb) => tb.items.map((it) => it.id)));
 
   if (error && !doc) return <Alert kind="danger">{error}</Alert>;
   if (!doc) return <Loading />;
@@ -391,6 +397,12 @@ export function TextbookEditorPage() {
           )}
         </div>
         <p className="muted small">쪽·문항 등 범위형 단위는 시작~끝(양 끝 포함)으로 수량을 계산합니다. 12~23쪽 = 12쪽. 예상 소요시간은 직접 입력값과 추정값을 구분해 표시합니다.</p>
+        <p className="muted small">보충 연결은 다른 교재의 항목을 제목으로 선택합니다. 보충형 과정에 그 교재를 주교재로 넣으면 선택한 항목 뒤에 붙습니다.</p>
+        {attachments.error ? (
+          <Alert kind="warn">보충 연결 목록을 불러오지 못했습니다. {attachments.error} <button className="sm" onClick={attachments.reload}>다시 불러오기</button></Alert>
+        ) : attachments.loading ? (
+          <p className="muted small">보충 연결 목록을 불러오는 중…</p>
+        ) : attachmentGroups.length === 0 && <p className="muted small">연결할 다른 교재의 학습항목이 없습니다. 주교재를 등록하고 제외하지 않은 항목을 추가하세요.</p>}
         {doc.items.length === 0 ? (
           <Empty>학습항목이 없습니다. 행을 추가하거나 표를 붙여넣어 가져오세요. 교재명만으로 목차를 자동 생성하지 않습니다.</Empty>
         ) : (
@@ -502,8 +514,21 @@ export function TextbookEditorPage() {
                         <option value="homework">숙제만</option>
                       </select>
                     </td>
-                    <td style={{ minWidth: 120 }}>
-                      <input value={it.attachToItemId ?? ''} placeholder="주교재 항목 id" disabled={readOnly} onChange={(e) => setItem(i, { attachToItemId: e.target.value || undefined })} title="보충형 구성에서 이 항목이 붙을 주교재 학습항목 id" />
+                    <td style={{ minWidth: 180 }}>
+                      <select value={it.attachToItemId ?? ''} disabled={readOnly || attachments.loading || !!attachments.error} onChange={(e) => setItem(i, { attachToItemId: e.target.value || undefined })} aria-label={`${it.title || `${i + 1}번 항목`} 보충 연결`}>
+                        <option value="">연결 안 함</option>
+                        {it.attachToItemId && !attachmentIds.has(it.attachToItemId) && (() => {
+                          const targetBook = [doc, ...(attachments.data ?? [])].find((tb) => tb.items.some((item) => item.id === it.attachToItemId));
+                          const target = targetBook?.items.find((item) => item.id === it.attachToItemId);
+                          const state = targetBook?.id === doc.id ? '같은 교재' : targetBook?.archived ? '보관' : target?.excluded ? '제외' : '목록에 없음';
+                          return <option value={it.attachToItemId} disabled>{target ? `${targetBook?.title} · ${target.order}. ${target.title} (${state})` : '기존 연결 · 항목을 찾을 수 없음'}</option>;
+                        })()}
+                        {attachmentGroups.map((tb) => (
+                          <optgroup key={tb.id} label={`${tb.title}${tb.edition ? ` · ${tb.edition}` : ''}`}>
+                            {tb.items.map((target) => <option key={target.id} value={target.id}>{target.order}. {target.title}{target.range ? ` (${target.range.from}~${target.range.to}${PROGRESS_UNIT_LABEL[target.progressUnit]})` : ''}</option>)}
+                          </optgroup>
+                        ))}
+                      </select>
                     </td>
                     {subjectFields.map((f) => (
                       <td key={f.key} style={{ minWidth: 100 }}>

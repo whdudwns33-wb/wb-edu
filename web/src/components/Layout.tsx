@@ -14,6 +14,10 @@ const NAV = [
 export function Layout() {
   const { user, logout } = useAuth();
   const nav = useNavigate();
+  async function signOut() {
+    await logout();
+    nav('/login');
+  }
   return (
     <div className="app">
       <aside className="sidebar">
@@ -21,7 +25,7 @@ export function Layout() {
           WB 커리큘럼 플래너
           <small>교재 → 표준과정 → 실행계획 → 진도</small>
         </div>
-        <nav>
+        <nav aria-label="기본 메뉴">
           {NAV.map((n) => (
             <NavLink key={n.to} to={n.to} end={n.to === '/plans' || n.to === '/plans/new'}>
               {n.label}
@@ -33,10 +37,7 @@ export function Layout() {
           <div className="mt">
             <button
               className="sm"
-              onClick={async () => {
-                await logout();
-                nav('/login');
-              }}
+              onClick={signOut}
             >
               로그아웃
             </button>
@@ -46,12 +47,32 @@ export function Layout() {
       <main className="main">
         <Outlet />
       </main>
-      <nav className="bottom-nav">
+      <nav
+        className="bottom-nav"
+        aria-label="모바일 기본 메뉴"
+        onClick={(e) => {
+          if ((e.target as HTMLElement).closest('a')) e.currentTarget.querySelector('details')?.removeAttribute('open');
+        }}
+      >
         {NAV.filter((n) => ['/plans', '/today', '/textbooks', '/curricula', '/settings'].includes(n.to)).map((n) => (
           <NavLink key={n.to} to={n.to} end={n.to === '/plans'}>
             {n.mobile}
           </NavLink>
         ))}
+        <details className="mobile-more">
+          <summary>더보기</summary>
+          <div className="mobile-more-menu">
+            <nav aria-label="추가 메뉴">
+              {NAV.filter((n) => ['/plans/new', '/objectives'].includes(n.to)).map((n) => (
+                <NavLink key={n.to} to={n.to} end>{n.label}</NavLink>
+              ))}
+            </nav>
+            <div className="mobile-account">
+              <span>{user?.displayName} ({user?.role === 'admin' ? '관리자' : '강사'})</span>
+              <button onClick={signOut}>로그아웃</button>
+            </div>
+          </div>
+        </details>
       </nav>
     </div>
   );

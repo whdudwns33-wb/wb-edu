@@ -24,6 +24,9 @@ html, body { margin: 0; padding: 0; }
 body { font-family: var(--font); color: var(--text); background: var(--bg); font-size: 14px; line-height: 1.5; -webkit-text-size-adjust: 100%; }
 a { color: var(--primary); text-decoration: none; }
 a:hover { text-decoration: underline; }
+a, button, summary { text-underline-offset: 3px; }
+a:focus-visible, button:focus-visible, summary:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+::selection { background: var(--primary-soft); color: var(--text); }
 h1, h2, h3, h4 { margin: 0 0 8px; line-height: 1.3; }
 h1 { font-size: 20px; }
 h2 { font-size: 17px; }
@@ -33,11 +36,12 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; backgrou
 
 /* 레이아웃 */
 .app { display: flex; min-height: 100vh; }
-.sidebar { width: 220px; background: var(--primary); color: #fff; padding: 16px 12px; position: sticky; top: 0; height: 100vh; flex-shrink: 0; }
+.sidebar { width: 220px; background: var(--primary); color: #fff; padding: 16px 12px; position: sticky; top: 0; height: 100vh; flex-shrink: 0; overflow-y: auto; }
 .sidebar .brand { font-weight: 700; font-size: 16px; padding: 8px; margin-bottom: 12px; }
 .sidebar .brand small { display: block; font-weight: 400; opacity: 0.8; font-size: 11px; }
 .sidebar nav a { display: block; color: #fff; padding: 9px 10px; border-radius: 6px; margin-bottom: 2px; opacity: 0.9; }
 .sidebar nav a.active, .sidebar nav a:hover { background: rgba(255, 255, 255, 0.15); text-decoration: none; opacity: 1; }
+.sidebar nav a:focus-visible { outline-color: #fff; }
 .sidebar .user { margin-top: auto; font-size: 12px; opacity: 0.9; padding: 8px; border-top: 1px solid rgba(255, 255, 255, 0.2); }
 .sidebar { display: flex; flex-direction: column; }
 .main { flex: 1; min-width: 0; padding: 20px 24px 60px; }
@@ -66,7 +70,8 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; backgrou
 label.field { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
 label.field > span { font-weight: 600; color: var(--text); }
 input, select, textarea { font: inherit; padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; background: #fff; color: var(--text); min-width: 0; }
-input:focus, select:focus, textarea:focus { outline: 2px solid var(--primary-soft); border-color: var(--primary); }
+input:focus, select:focus, textarea:focus { outline: 2px solid var(--primary); outline-offset: 1px; border-color: var(--primary); }
+input, textarea { caret-color: var(--primary); }
 input[type='checkbox'] { width: 16px; height: 16px; }
 textarea { min-height: 70px; resize: vertical; }
 .check { display: inline-flex; gap: 6px; align-items: center; font-size: 13px; }
@@ -104,7 +109,7 @@ table { border-collapse: collapse; width: 100%; font-size: 13px; }
 th, td { border-bottom: 1px solid var(--line); padding: 6px 8px; text-align: left; vertical-align: top; }
 th { background: #f7f9fb; font-weight: 600; color: var(--muted); white-space: nowrap; position: sticky; top: 0; }
 tr:hover td { background: #fafcff; }
-td.num, th.num { text-align: right; white-space: nowrap; }
+td.num, th.num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
 table.compact th, table.compact td { padding: 4px 6px; font-size: 12px; }
 table input, table select { padding: 4px 6px; font-size: 12px; width: 100%; }
 /* 표 안 입력칸이 좁은 화면에서 읽고 누를 수 없을 만큼 줄어들지 않게 */
@@ -117,12 +122,14 @@ table input[type='checkbox'] { min-width: 0; width: 16px; }
 .tabs { display: flex; gap: 2px; border-bottom: 2px solid var(--line); margin-bottom: 14px; overflow-x: auto; }
 .tabs button { border: none; background: none; border-radius: 0; padding: 8px 12px; color: var(--muted); border-bottom: 2px solid transparent; margin-bottom: -2px; }
 .tabs button.active { color: var(--primary); border-bottom-color: var(--primary); font-weight: 600; }
+.tabs button:focus-visible { outline-offset: -3px; }
 
 /* 모달 */
-.modal-backdrop { position: fixed; inset: 0; background: rgba(15, 23, 42, 0.45); display: flex; align-items: center; justify-content: center; z-index: 50; padding: 12px; }
-.modal { background: #fff; border-radius: 10px; width: min(760px, 100%); max-height: 92vh; overflow: auto; padding: 18px; box-shadow: 0 20px 40px rgba(0, 0, 0, 0.25); }
-.modal.wide { width: min(1100px, 100%); }
+.modal { background: var(--panel); color: var(--text); border: none; border-radius: 10px; width: min(760px, calc(100% - 24px)); max-height: 92vh; max-height: 92dvh; overflow: auto; padding: 18px; box-shadow: 0 20px 40px rgba(0, 0, 0, 0.25); }
+.modal::backdrop { background: rgba(15, 23, 42, 0.45); }
+.modal.wide { width: min(1100px, calc(100% - 24px)); }
 .modal h2 { margin-bottom: 12px; }
+.modal textarea { width: 100%; }
 
 /* 과정 조립판 */
 .board { display: flex; gap: 10px; overflow-x: auto; padding-bottom: 8px; align-items: flex-start; }
@@ -189,10 +196,20 @@ table input[type='checkbox'] { min-width: 0; width: 16px; }
 @media (max-width: 860px) {
   .app { flex-direction: column; }
   .sidebar { display: none; }
-  .main { padding: 12px 12px 76px; }
+  .main { padding: 12px 12px calc(76px + env(safe-area-inset-bottom)); }
   .bottom-nav { display: flex; position: fixed; bottom: 0; left: 0; right: 0; background: #fff; border-top: 1px solid var(--line); z-index: 40; padding-bottom: env(safe-area-inset-bottom); }
-  .bottom-nav a { flex: 1; text-align: center; padding: 8px 2px; font-size: 11px; color: var(--muted); }
-  .bottom-nav a.active { color: var(--primary); font-weight: 600; }
+  .bottom-nav > a, .mobile-more > summary { flex: 1; display: flex; justify-content: center; align-items: center; min-height: 48px; text-align: center; padding: 8px 2px; font-size: 12px; color: var(--muted); }
+  .bottom-nav > a.active, .mobile-more[open] > summary { color: var(--primary); font-weight: 600; background: var(--primary-soft); }
+  .mobile-more { flex: 1; position: relative; }
+  .mobile-more > summary { list-style: none; cursor: pointer; }
+  .mobile-more > summary::-webkit-details-marker { display: none; }
+  .mobile-more-menu { position: absolute; bottom: calc(100% + 8px); right: 8px; width: min(300px, calc(100vw - 24px)); padding: 12px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); }
+  .mobile-more-menu nav a { display: flex; align-items: center; min-height: 44px; padding: 8px; border-radius: 6px; }
+  .mobile-more-menu nav a:hover, .mobile-more-menu nav a.active { background: var(--primary-soft); text-decoration: none; }
+  .mobile-account { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; border-top: 1px solid var(--line); margin-top: 8px; padding-top: 12px; font-size: 12px; }
+  button, .btn, input:not([type='checkbox']), select { min-height: 44px; }
+  button, .btn { min-width: 44px; justify-content: center; }
+  .check { min-height: 44px; }
   .grid.cols-2, .grid.cols-3, .grid.cols-4 { grid-template-columns: 1fr; }
   .board .session { min-width: 220px; }
   .modal { padding: 12px; }

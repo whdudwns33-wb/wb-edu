@@ -52,7 +52,7 @@ npm run dev:server       # 서버 (tsx watch)
 npm run dev:web          # Vite 개발 서버 http://127.0.0.1:5173 (/api 는 3987로 프록시)
 ```
 
-운영 모드 — 별도 DB 파일 `server/data/wb-edu.sqlite` (샘플을 넣지 않습니다). `.env.prod.example`을 `.env.prod`로 복사해 관리자 비밀번호를 적은 뒤:
+운영 모드 — 별도 DB 파일 `server/data/wb-edu.sqlite` (샘플을 넣지 않습니다). 먼저 `npm run setup:prod`로 설정 파일 생성·준비 점검을 마친 뒤:
 
 ```bash
 npm run start:prod
@@ -74,7 +74,7 @@ npm run backup:prod
 ## 테스트
 
 ```bash
-npm test                 # vitest: shared 단위 135건 + server API 통합 62건
+npm test                 # vitest: shared 135 + server 69 + 운영 스크립트 7 + 웹 UI 9 = 220건
 npm run typecheck
 ```
 

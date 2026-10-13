@@ -40,7 +40,7 @@ export function PlansListPage() {
       <div className="topbar">
         <h1>계획 목록</h1>
         <div className="row">
-          <input placeholder="검색 (계획명·대상·과정)" value={q} onChange={(e) => setQ(e.target.value)} />
+          <input aria-label="계획 검색" placeholder="검색 (계획명·대상·과정)" value={q} onChange={(e) => setQ(e.target.value)} />
           <label className="check">
             <input type="checkbox" checked={showArchived} onChange={(e) => setShowArchived(e.target.checked)} /> 보관 포함
           </label>
@@ -54,7 +54,9 @@ export function PlansListPage() {
         {loading ? (
           <Loading />
         ) : rows.length === 0 ? (
-          <Empty>아직 계획이 없습니다. 교재를 등록하고 표준과정을 만든 뒤 계획을 만들어 보세요.</Empty>
+          <Empty>
+            {q ? <>검색 조건에 맞는 계획이 없습니다. <button onClick={() => setQ('')}>검색 지우기</button></> : '아직 계획이 없습니다. 교재를 등록하고 표준과정을 만든 뒤 계획을 만들어 보세요.'}
+          </Empty>
         ) : (
           <div className="table-wrap">
             <table>

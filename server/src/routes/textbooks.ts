@@ -49,7 +49,7 @@ export function normalizeItem(raw: unknown, idx: number): LearningItem {
   };
 }
 
-export function normalizeTextbook(raw: unknown, existing?: Textbook): Omit<Textbook, keyof import('@wb/shared').AuditMeta> & { id: string } {
+export function normalizeTextbook(raw: unknown, store: AppContext['store'], existing?: Textbook): Omit<Textbook, keyof import('@wb/shared').AuditMeta> & { id: string } {
   const r = (raw ?? {}) as Record<string, unknown>;
   const title = str(r.title).trim();
   if (!title) throw new HttpError(400, '교재명은 필수입니다.');
@@ -65,6 +65,14 @@ export function normalizeTextbook(raw: unknown, existing?: Textbook): Omit<Textb
     if (it.prerequisiteItemIds.includes(it.id)) throw new HttpError(400, `'${it.title}'은(는) 자기 자신을 선수 학습으로 가질 수 없습니다.`);
     const unknown = it.prerequisiteItemIds.filter((p) => !ids.has(p));
     if (unknown.length) throw new HttpError(400, `'${it.title}'의 선수 학습에 이 교재에 없는 항목이 있습니다: ${unknown.join(', ')}`);
+  }
+  const attachmentTargets = new Set(store.list<Textbook>('textbook').filter((tb) => tb.id !== existing?.id).flatMap((tb) => tb.items.filter((it) => !it.excluded).map((it) => it.id)));
+  for (const it of items) {
+    if (!it.attachToItemId) continue;
+    // 대상이 나중에 보관·제외·삭제돼도 기존 연결은 지우지 않고, 새로 연결할 때만 검사한다.
+    if (existing?.items.find((old) => old.id === it.id)?.attachToItemId === it.attachToItemId) continue;
+    if (ids.has(it.attachToItemId)) throw new HttpError(400, `'${it.title}'의 보충 연결은 다른 교재의 학습항목을 선택하세요.`);
+    if (!attachmentTargets.has(it.attachToItemId)) throw new HttpError(400, `'${it.title}'의 보충 연결 대상을 찾을 수 없거나 보관·제외된 항목입니다. 연결을 해제하거나 다른 항목을 선택하세요.`);
   }
   // 선수 관계가 돌고 돌면(가→나→가) 어느 항목도 먼저 배정할 수 없어, 편성에서 모두 '시간 부족'처럼 보인다
   const byId = new Map(items.map((it) => [it.id, it]));
@@ -159,7 +167,7 @@ export function registerTextbookRoutes(app: FastifyInstance, ctx: AppContext) {
     const user = requireAdmin(req);
     const at = ctx.now();
     const body = (req.body ?? {}) as Record<string, unknown>;
-    const base = normalizeTextbook(body);
+    const base = normalizeTextbook(body, store);
     const doc: Textbook = { ...base, id: genId(), ...newMeta(user, at, bool(body.isSample, false)) };
     store.insert('textbook', doc);
     store.audit({ at, userId: user.id, kind: 'textbook', docId: doc.id, action: 'create', detail: doc.title });
@@ -172,7 +180,7 @@ export function registerTextbookRoutes(app: FastifyInstance, ctx: AppContext) {
     const id = (req.params as { id: string }).id;
     const existing = store.mustGet<Textbook>('textbook', id);
     const version = expectVersion(req.body);
-    const base = normalizeTextbook(req.body, existing);
+    const base = normalizeTextbook(req.body, store, existing);
     const { blockers, warnings } = curriculumUsage(store, id, base.items);
     if (blockers.length) throw new HttpError(400, '이 교재를 쓰는 과정과 맞지 않아 저장하지 않았습니다. 과정에서 해당 배치를 먼저 고치거나 빼세요.', blockers.slice(0, 30));
     const doc: Textbook = touched({ ...existing, ...base, id, isSample: bool((req.body as Record<string, unknown>).isSample, existing.isSample), archived: bool((req.body as Record<string, unknown>).archived, existing.archived) }, user, ctx.now());

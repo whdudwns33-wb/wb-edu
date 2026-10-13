@@ -16,7 +16,11 @@ if (!existsSync(dbPath)) {
   process.exit(1);
 }
 const keepIdx = process.argv.indexOf('--keep');
-const keep = keepIdx >= 0 ? Number(process.argv[keepIdx + 1]) || 60 : 60;
+const keep = keepIdx >= 0 ? Number(process.argv[keepIdx + 1]) : 60;
+if (!Number.isSafeInteger(keep) || keep < 1) {
+  console.error('--keep은 1 이상의 정수여야 합니다. 기존 백업은 변경하지 않았습니다.');
+  process.exit(1);
+}
 
 const dir = process.env.WB_BACKUP_DIR ?? join(SERVER_ROOT, 'data', 'backups');
 mkdirSync(dir, { recursive: true });

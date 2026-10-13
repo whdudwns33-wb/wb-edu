@@ -3,7 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../src/app.ts';
 import { seedAdmin, seedDemoTeacher, seedSamples } from '../src/seed.ts';
 import { resetLoginLimiter } from '../src/routes/users.ts';
-import { SAMPLE_IDS } from '@wb/shared';
+import { SAMPLE_IDS, type LearningItem, type Textbook } from '@wb/shared';
 
 let app: FastifyInstance;
 let adminCookie = '';
@@ -134,6 +134,71 @@ describe('교재 보관함', () => {
     expect(list.json().some((t: { id: string }) => t.id === clone.json().id)).toBe(false);
     const all = await asAdmin({ method: 'GET', url: '/api/textbooks?archived=1' });
     expect(all.json().some((t: { id: string }) => t.id === clone.json().id)).toBe(true);
+  });
+});
+
+describe('교재 보충 연결', () => {
+  const item = (patch: Partial<LearningItem> = {}) => ({ title: '연결 확인 항목', progressUnit: 'activity', minutes: 10, ...patch });
+  const create = async (title: string, items: ReturnType<typeof item>[]) => {
+    const res = await asAdmin({ method: 'POST', url: '/api/textbooks', payload: { title, items } });
+    expect(res.statusCode).toBe(201);
+    return res.json<Textbook>();
+  };
+
+  it('다른 교재의 항목을 연결하면 보충형 과정에 붙고, 복제도 같은 대상을 유지한다', async () => {
+    const main = await create('보충 연결 주교재', [item({ title: '주교재 학습' })]);
+    const supplement = await create('보충 연결 활동지', [item({ attachToItemId: main.items[0].id })]);
+    const auto = await asAdmin({ method: 'POST', url: '/api/curricula/auto-assemble', payload: { textbooks: [{ textbookId: main.id, role: 'main' }, { textbookId: supplement.id, role: 'supplement' }], compositionMode: 'supplement', minutesPerSession: 60 } });
+    expect(auto.statusCode).toBe(200);
+    expect(auto.json().sessions.flatMap((s: { entries: Array<{ itemId: string }> }) => s.entries).map((e: { itemId: string }) => e.itemId)).toEqual([main.items[0].id, supplement.items[0].id]);
+    expect(auto.json().unassignedEntries).toEqual([]);
+    const clone = await asAdmin({ method: 'POST', url: `/api/textbooks/${supplement.id}/clone` });
+    expect(clone.statusCode).toBe(201);
+    expect(clone.json<Textbook>().items[0].id).not.toBe(supplement.items[0].id);
+    expect(clone.json<Textbook>().items[0].attachToItemId).toBe(main.items[0].id);
+  });
+
+  it('없는 대상·자기 자신·같은 교재·제외·보관 항목은 새로 연결할 수 없다', async () => {
+    const main = await create('연결 경계 주교재', [item(), item({ excluded: true })]);
+    const archived = await create('보관한 연결 주교재', [item()]);
+    expect((await asAdmin({ method: 'POST', url: `/api/textbooks/${archived.id}/archive`, payload: { archived: true } })).statusCode).toBe(200);
+    for (const target of ['없는 항목', main.items[1].id, archived.items[0].id]) {
+      const res = await asAdmin({ method: 'POST', url: '/api/textbooks', payload: { title: '잘못된 보충 연결', items: [item({ attachToItemId: target })] } });
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error).toContain('보충 연결');
+    }
+    for (const target of ['self', 'same-book']) {
+      const res = await asAdmin({ method: 'POST', url: '/api/textbooks', payload: { title: '교재 안의 보충 연결', items: [item({ id: 'self', attachToItemId: target }), item({ id: 'same-book' })] } });
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error).toContain('다른 교재');
+    }
+    const supplement = await create('수정 경계 활동지', [item({ attachToItemId: main.items[0].id })]);
+    const invalid = await asAdmin({ method: 'PUT', url: `/api/textbooks/${supplement.id}`, payload: { ...supplement, items: [item({ ...supplement.items[0], attachToItemId: main.items[1].id })] } });
+    expect(invalid.statusCode).toBe(400);
+    const unchanged = (await asAdmin({ method: 'GET', url: `/api/textbooks/${supplement.id}` })).json<Textbook>();
+    expect(unchanged.version).toBe(supplement.version);
+    expect(unchanged.items[0].attachToItemId).toBe(main.items[0].id);
+  });
+
+  it.each(['보관', '제외', '삭제'])('대상이 %s돼도 기존 연결을 보존하며, 다른 항목으로 바꾸거나 해제할 수 있다', async (state) => {
+    const main = await create(`기존 연결 ${state} 주교재`, [item(), item({ title: '바꿀 대상' })]);
+    const supplement = await create(`기존 연결 ${state} 활동지`, [item({ attachToItemId: main.items[0].id })]);
+    const changed = state === '보관'
+      ? await asAdmin({ method: 'POST', url: `/api/textbooks/${main.id}/archive`, payload: { archived: true } })
+      : await asAdmin({ method: 'PUT', url: `/api/textbooks/${main.id}`, payload: { ...main, items: state === '삭제' ? main.items.slice(1) : main.items.map((it, i) => i === 0 ? { ...it, excluded: true } : it) } });
+    expect(changed.statusCode).toBe(200);
+    const saved = await asAdmin({ method: 'PUT', url: `/api/textbooks/${supplement.id}`, payload: { ...supplement, title: '기존 연결 유지' } });
+    expect(saved.statusCode).toBe(200);
+    expect(saved.json<Textbook>().items[0].attachToItemId).toBe(main.items[0].id);
+    const target = await create('새 연결 주교재', [item()]);
+    const current = saved.json<Textbook>();
+    const switched = await asAdmin({ method: 'PUT', url: `/api/textbooks/${current.id}`, payload: { ...current, items: current.items.map((it) => ({ ...it, attachToItemId: target.items[0].id })) } });
+    expect(switched.statusCode).toBe(200);
+    expect(switched.json<Textbook>().items[0].attachToItemId).toBe(target.items[0].id);
+    const updated = switched.json<Textbook>();
+    const cleared = await asAdmin({ method: 'PUT', url: `/api/textbooks/${updated.id}`, payload: { ...updated, items: updated.items.map((it) => ({ ...it, attachToItemId: undefined })) } });
+    expect(cleared.statusCode).toBe(200);
+    expect(cleared.json<Textbook>().items[0].attachToItemId).toBeUndefined();
   });
 });
 

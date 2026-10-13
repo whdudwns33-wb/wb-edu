@@ -4,7 +4,7 @@
  *  - 이미 셸에 있는 값이 우선한다.
  *  - WB_MODE=prod 로 고정해 운영 DB(server/data/wb-edu.sqlite)를 쓴다.
  */
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -26,14 +26,26 @@ export function parseEnvFile(text) {
 }
 
 export function loadProdEnv() {
-  const env = { ...process.env, WB_MODE: 'prod' };
+  const env = { ...process.env };
   const file = envFilePath();
   let loaded = false;
   if (existsSync(file)) {
     for (const [k, v] of Object.entries(parseEnvFile(readFileSync(file, 'utf8')))) if (!(k in process.env)) env[k] = v;
     loaded = true;
   }
-  const dbPath = env.WB_DB_PATH ? resolve(env.WB_DB_PATH) : join(ROOT, 'server', 'data', 'wb-edu.sqlite');
+  env.WB_MODE = 'prod';
+  // 실행기와 서버의 작업 폴더가 달라도 같은 파일을 사용한다.
+  for (const key of ['WB_DB_PATH', 'WB_BACKUP_DIR', 'WB_LOG_DIR', 'WB_STATIC_DIR']) {
+    if (env[key]) env[key] = resolve(ROOT, env[key]);
+  }
+  const dbPath = env.WB_DB_PATH || join(ROOT, 'server', 'data', 'wb-edu.sqlite');
+  const demoPath = join(ROOT, 'server', 'data', 'wb-edu.demo.sqlite');
+  const canonical = (path) => {
+    const value = existsSync(path) ? realpathSync(path) : path;
+    return process.platform === 'win32' ? value.toLowerCase() : value;
+  };
+  if (canonical(dbPath) === canonical(demoPath)) throw new Error('운영 DB 경로가 데모 DB와 같습니다. WB_DB_PATH를 별도 파일로 바꾸세요.');
+  env.WB_DB_PATH = dbPath;
   return { env, file, loaded, dbPath };
 }
 

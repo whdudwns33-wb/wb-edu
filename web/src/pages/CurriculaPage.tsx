@@ -20,7 +20,7 @@ export function CurriculaPage() {
       <div className="topbar">
         <h1>표준과정 보관함</h1>
         <div className="row">
-          <input placeholder="검색" value={q} onChange={(e) => setQ(e.target.value)} />
+          <input aria-label="표준과정 검색" placeholder="검색 (과정명·대상)" value={q} onChange={(e) => setQ(e.target.value)} />
           {user?.role === 'admin' && (
             <Link className="btn primary" to="/curricula/new">
               + 과정 만들기
@@ -34,7 +34,9 @@ export function CurriculaPage() {
         {loading ? (
           <Loading />
         ) : rows.length === 0 ? (
-          <Empty>표준과정이 없습니다.</Empty>
+          <Empty>
+            {q ? <>검색 조건에 맞는 표준과정이 없습니다. <button onClick={() => setQ('')}>검색 지우기</button></> : user?.role === 'admin' ? '표준과정이 없습니다. 교재를 등록한 뒤 과정 만들기로 진행하세요.' : '등록된 표준과정이 없습니다. 관리자에게 과정 등록을 요청하세요.'}
+          </Empty>
         ) : (
           <div className="table-wrap">
             <table>

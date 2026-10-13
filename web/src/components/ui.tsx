@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 
 export function Badge({ kind = '', children }: { kind?: string; children: ReactNode }) {
   return <span className={`badge ${kind}`}>{children}</span>;
@@ -13,23 +13,32 @@ export function Alert({ kind = 'info', children }: { kind?: 'info' | 'warn' | 'd
 }
 
 export function Modal({ title, onClose, children, wide }: { title: string; onClose: () => void; children: ReactNode; wide?: boolean }) {
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
+  const ref = useRef<HTMLDialogElement>(null);
+  useLayoutEffect(() => {
+    const dialog = ref.current!;
+    dialog.showModal();
+    return () => dialog.close();
+  }, []);
   return (
-    <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className={`modal ${wide ? 'wide' : ''}`} role="dialog" aria-label={title}>
-        <div className="row between mb">
-          <h2 style={{ margin: 0 }}>{title}</h2>
-          <button className="sm" onClick={onClose} aria-label="닫기">
-            닫기
-          </button>
-        </div>
-        {children}
+    <dialog
+      ref={ref}
+      className={`modal ${wide ? 'wide' : ''}`}
+      aria-label={title}
+      onCancel={(e) => { e.preventDefault(); onClose(); }}
+      onMouseDown={(e) => {
+        if (e.target !== e.currentTarget) return;
+        const rect = e.currentTarget.getBoundingClientRect();
+        if (e.clientX < rect.left || e.clientX > rect.right || e.clientY < rect.top || e.clientY > rect.bottom) onClose();
+      }}
+    >
+      <div className="row between mb">
+        <h2 style={{ margin: 0 }}>{title}</h2>
+        <button className="sm" onClick={onClose} aria-label="닫기">
+          닫기
+        </button>
       </div>
-    </div>
+      {children}
+    </dialog>
   );
 }
 
@@ -46,8 +55,26 @@ export function Field({ label, children, hint }: { label: string; children: Reac
 export function Tabs<T extends string>({ tabs, value, onChange }: { tabs: Array<{ key: T; label: string }>; value: T; onChange: (k: T) => void }) {
   return (
     <div className="tabs" role="tablist">
-      {tabs.map((t) => (
-        <button key={t.key} role="tab" className={value === t.key ? 'active' : ''} onClick={() => onChange(t.key)}>
+      {tabs.map((t, i) => (
+        <button
+          key={t.key}
+          role="tab"
+          aria-selected={value === t.key}
+          tabIndex={value === t.key ? 0 : -1}
+          className={value === t.key ? 'active' : ''}
+          onClick={() => onChange(t.key)}
+          onKeyDown={(e) => {
+            let next = i;
+            if (e.key === 'ArrowRight') next = (i + 1) % tabs.length;
+            else if (e.key === 'ArrowLeft') next = (i + tabs.length - 1) % tabs.length;
+            else if (e.key === 'Home') next = 0;
+            else if (e.key === 'End') next = tabs.length - 1;
+            else return;
+            e.preventDefault();
+            onChange(tabs[next].key);
+            (e.currentTarget.parentElement?.children[next] as HTMLElement)?.focus();
+          }}
+        >
           {t.label}
         </button>
       ))}
