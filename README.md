@@ -74,7 +74,7 @@ npm run backup:prod
 ## 테스트
 
 ```bash
-npm test                 # vitest: shared 135 + server 69 + 운영 스크립트 7 + 웹 UI 9 = 220건
+npm test                 # vitest: shared 135 + server 71 + 운영 스크립트 7 + 웹 UI 9 = 222건
 npm run typecheck
 ```
 

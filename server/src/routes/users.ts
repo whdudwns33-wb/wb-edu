@@ -57,7 +57,7 @@ export function registerUserRoutes(app: FastifyInstance, ctx: AppContext) {
     loginFails.delete(key);
     const token = newToken();
     store.createSession(token, u.id, SESSION_TTL_MS);
-    reply.setCookie(SESSION_COOKIE, token, { path: '/', httpOnly: true, sameSite: 'lax', maxAge: SESSION_TTL_MS / 1000 });
+    reply.setCookie(SESSION_COOKIE, token, { path: '/', httpOnly: true, secure: req.headers['x-forwarded-proto'] === 'https', sameSite: 'lax', maxAge: SESSION_TTL_MS / 1000 });
     return toSessionUser(u);
   });
 

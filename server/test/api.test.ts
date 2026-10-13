@@ -48,6 +48,15 @@ const asAdmin = (opts: Record<string, unknown>) => app.inject({ ...opts, headers
 const asTeacher = (opts: Record<string, unknown>) => app.inject({ ...opts, headers: { cookie: teacherCookie } } as never);
 
 describe('인증·권한', () => {
+  it.each([[undefined, false], ['https', true]] as const)('로그인 쿠키는 접속 방식 %s에서 Secure=%s를 적용한다', async (protocol, secure) => {
+    const res = await app.inject({ method: 'POST', url: '/api/auth/login', payload: { username: 'admin', password: 'admin1234' }, headers: protocol ? { 'x-forwarded-proto': protocol } : undefined });
+    expect(res.statusCode).toBe(200);
+    const cookie = res.cookies.find((c) => c.name === 'wb_session')!;
+    expect(cookie.secure ?? false).toBe(secure);
+    expect(cookie.httpOnly).toBe(true);
+    expect(cookie.sameSite).toBe('Lax');
+  });
+
   it('로그인 없이 API 접근 시 401', async () => {
     const res = await app.inject({ method: 'GET', url: '/api/textbooks' });
     expect(res.statusCode).toBe(401);
