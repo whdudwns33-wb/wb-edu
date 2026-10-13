@@ -39,6 +39,7 @@ npm install
 npm run seed:sample      # 관리자(admin/admin1234), 샘플 강사(teacher/teacher1234), 가상 샘플 교재·과정 추가
 npm run build            # 웹 빌드 + 타입검사
 npm start                # http://127.0.0.1:3987 (빌드된 웹앱을 서버가 함께 서빙)
+npm run start:demo       # 같은 데모 서버를 3988 포트로 (운영 서버가 3987을 쓰는 학원 PC에서 개발할 때)
 ```
 
 개발 중 핫리로드가 필요하면 터미널 두 개에서:

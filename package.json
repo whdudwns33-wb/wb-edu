@@ -15,6 +15,7 @@
     "dev:web": "npm run dev -w web",
     "build": "npm run build -w web && npm run typecheck",
     "start": "npm run start -w server",
+    "start:demo": "node scripts/start-demo.mjs",
     "start:prod": "node scripts/start-prod.mjs",
     "setup:prod": "node scripts/setup-prod.mjs",
     "backup": "npm run backup -w server --",

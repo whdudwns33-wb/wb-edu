@@ -12,6 +12,13 @@
 
 Node 22.13 이상 필요(내장 `node:sqlite` 사용, 네이티브 모듈 없음). 포트 3987.
 
+**이 저장소가 있는 PC(C:\Users\wb\wb-edu)는 실제 학원 PC이며 운영 서버가 돌고 있다 (2026-10-13 배포).**
+- 운영 서버: 작업 스케줄러 'WB Planner Server'가 로그온 시 창 없이 실행, http://127.0.0.1:3987, 운영 DB `server/data/wb-edu.sqlite`, 기록 `server/data/logs/`.
+- 매일 23:00 'WB Planner Backup'이 운영 DB를 `server/data/backups/`에 백업.
+- 개발·확인용 데모 서버는 3988 포트로 띄운다: `npm run start:demo` (`.claude/launch.json`도 3988). `npm start`(3987)는 이 PC에서 운영 서버와 포트가 겹친다.
+- 운영 DB·`.env.prod`·작업 스케줄러는 사용자 요청 없이 건드리지 않는다. 테스트는 메모리 DB나 데모 DB, 또는 `WB_ENV_FILE`로 지정한 임시 환경에서 한다.
+- 코드를 바꿔 운영에 반영할 때는 배포 가이드의 '업데이트 절차'(backup:prod → build → 서버 작업 재시작)를 따른다.
+
 ```bash
 npm install
 ```
@@ -74,7 +81,7 @@ npm run typecheck
 
 ### 1. 사용자 결정·자료가 필요한 것 (에이전트가 혼자 할 수 없음)
 
-- **배포**: A 구성(학원 PC 한 대)으로 정했고 준비를 마쳤다(2026-10-13). 운영 PC에서 [docs/배포-가이드.md](docs/배포-가이드.md)의 'A 구성 따라 하기'를 사람이 실행한다: setup:prod → start:prod로 첫 로그인·비밀번호 변경 → 관리자 PowerShell에서 register-tasks.ps1.
+- **배포**: A 구성(학원 PC 한 대)으로 이 PC에 배포했다(2026-10-13). 작업 등록·첫 실행·백업 작업까지 확인. 사용자가 할 일: 초기 관리자 비밀번호(`.env.prod`)로 로그인해 비밀번호 바꾸기, `.env.prod`의 `WB_ADMIN_PASSWORD` 줄 지우기, 강사 계정 만들기, 휴일 확인.
 - **운영 관리자 비밀번호**: `setup:prod`가 무작위로 만든 초기값을 첫 로그인 뒤 앱에서 바꾼다 (`.env.prod`는 git에 올라가지 않음).
 - **도메인·HTTPS**: C 구성이면 `deploy/Caddyfile.example` 기준으로 설정.
 - **시범 운영 자료**: 실제 교재 목차, 반 시간표(요일·시간·기간), 휴일. 절차는 [docs/시범운영-가이드.md](docs/시범운영-가이드.md), 의견 기록은 `docs/시범운영-피드백.md`.

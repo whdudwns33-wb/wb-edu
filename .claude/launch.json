@@ -4,8 +4,11 @@
     {
       "name": "wb-server",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "start"],
-      "port": 3987
+      "runtimeArgs": [
+        "run",
+        "start:demo"
+      ],
+      "port": 3988
     }
   ]
 }
