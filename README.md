@@ -60,11 +60,13 @@ npm run start:prod
 첫 실행에서 `WB_ADMIN_PASSWORD`가 비어 있으면 기본 비밀번호로 관리자가 만들어지지 않도록 실행을 중단합니다.
 환경변수: `PORT`(기본 3987), `HOST`(기본 127.0.0.1), `WB_DB_PATH`(DB 경로 직접 지정), `WB_STATIC_DIR`(웹 빌드 경로), `WB_LOG=0`(로그 끄기), `WB_BACKUP_DIR`(백업 폴더).
 
-백업(`VACUUM INTO`로 일관된 사본, 기본 60개 보관):
+운영 DB 백업(`VACUUM INTO`로 일관된 사본, 기본 60개 보관). `npm run backup`은 데모 DB를 백업합니다.
 
 ```bash
-npm run backup
+npm run backup:prod
 ```
+
+학원 PC 한 대에 배포하는 순서(`npm run setup:prod` → 첫 실행 → 작업 스케줄러 등록)는 [docs/배포-가이드.md](docs/배포-가이드.md)의 'A 구성 따라 하기'에 있습니다. 운영 모드로 창 없이 실행하면 기록은 `server/data/logs/`에 남습니다(`WB_LOG_DIR`로 변경).
 
 시범 운영 절차는 [docs/시범운영-가이드.md](docs/시범운영-가이드.md), 피드백 기록은 [docs/시범운영-피드백.md](docs/시범운영-피드백.md), 교재 목차 붙여넣기 양식은 [docs/templates/학습항목-붙여넣기-양식.tsv](docs/templates/학습항목-붙여넣기-양식.tsv)를 보세요.
 
@@ -84,7 +86,7 @@ npm run typecheck
 - [docs/가정과제한.md](docs/가정과제한.md) — 가정, 미구현, 제한 사항
 - [docs/테스트결과.md](docs/테스트결과.md) — 자동·실제 테스트 결과, 화면 예시
 - [docs/시범운영-가이드.md](docs/시범운영-가이드.md) — 실제 교재로 시범 운영하는 절차
-- [docs/배포-가이드.md](docs/배포-가이드.md) — 자동 시작·자동 백업(Windows 작업 스케줄러), HTTPS 프록시(Caddy), 업데이트·복구
+- [docs/배포-가이드.md](docs/배포-가이드.md) — 학원 PC 한 대 배포 따라 하기(`npm run setup:prod`), 자동 시작·자동 백업(Windows 작업 스케줄러), HTTPS 프록시(Caddy), 업데이트·복구
 - [AGENTS.md](AGENTS.md) — 이어서 작업하는 코딩 에이전트(Codex 등)용 안내: 명령, 구조, 지켜야 할 규칙, 남은 작업
 
 ## 주요 메뉴

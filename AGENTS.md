@@ -37,8 +37,9 @@ npm run typecheck
 ```
 
 - 데모 계정: admin/admin1234, teacher/teacher1234 (데모 DB `server/data/wb-edu.demo.sqlite`에만 있음).
-- 운영 모드: `.env.prod.example`을 `.env.prod`로 복사해 값을 채우고 `npm run start:prod`. 운영 DB는 `server/data/wb-edu.sqlite`로 데모와 분리된다.
-- 백업: `npm run backup` (SQLite `VACUUM INTO`, `server/data/backups/`).
+- 운영 모드: `npm run setup:prod`(없으면 `.env.prod`를 만들고 점검) → `npm run start:prod`. 운영 DB는 `server/data/wb-edu.sqlite`로 데모와 분리된다. 운영 스크립트는 `scripts/prod-env.mjs`(환경 읽기), `start-prod.mjs`, `backup-prod.mjs`, `setup-prod.mjs`. 시험할 때는 `WB_ENV_FILE`로 다른 환경 파일을 가리켜 실제 `.env.prod`·운영 DB를 건드리지 않는다.
+- 백업: 운영은 `npm run backup:prod`, 데모는 `npm run backup` (SQLite `VACUUM INTO`, `server/data/backups/`).
+- Windows 작업 등록: `deploy/windows/register-tasks.ps1` (BOM 있는 UTF-8·CRLF 유지. Windows PowerShell 5.1이 한글을 바르게 읽도록).
 - 변경을 마치기 전에 반드시 `npm test`, `npm run typecheck`, `npm run build -w web`을 모두 통과시킨다.
 
 ## 구조
@@ -73,9 +74,8 @@ npm run typecheck
 
 ### 1. 사용자 결정·자료가 필요한 것 (에이전트가 혼자 할 수 없음)
 
-- **배포 구성 선택**: [docs/배포-가이드.md](docs/배포-가이드.md)의 A(학원 PC 한 대)·B(학원 내부 Wi‑Fi)·C(외부 인터넷 + 도메인·HTTPS) 중 결정.
-- **운영 관리자 비밀번호**: `.env.prod` 작성 (git에 올라가지 않음).
-- **자동 시작·매일 백업 등록**: `deploy/windows/register-tasks.ps1`을 운영 PC의 관리자 PowerShell에서 실행.
+- **배포**: A 구성(학원 PC 한 대)으로 정했고 준비를 마쳤다(2026-10-13). 운영 PC에서 [docs/배포-가이드.md](docs/배포-가이드.md)의 'A 구성 따라 하기'를 사람이 실행한다: setup:prod → start:prod로 첫 로그인·비밀번호 변경 → 관리자 PowerShell에서 register-tasks.ps1.
+- **운영 관리자 비밀번호**: `setup:prod`가 무작위로 만든 초기값을 첫 로그인 뒤 앱에서 바꾼다 (`.env.prod`는 git에 올라가지 않음).
 - **도메인·HTTPS**: C 구성이면 `deploy/Caddyfile.example` 기준으로 설정.
 - **시범 운영 자료**: 실제 교재 목차, 반 시간표(요일·시간·기간), 휴일. 절차는 [docs/시범운영-가이드.md](docs/시범운영-가이드.md), 의견 기록은 `docs/시범운영-피드백.md`.
 

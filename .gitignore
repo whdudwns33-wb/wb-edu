@@ -9,3 +9,4 @@ server/data/backups/
 .env
 .env.prod
 web/public/ocr/
+server/data/logs/
