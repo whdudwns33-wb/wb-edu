@@ -1,3 +1,5 @@
+import { AccountTab } from '../pages/SettingsPage.tsx';
+import { isManager, roleLabel } from '@wb/shared';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth.tsx';
 
@@ -18,6 +20,7 @@ export function Layout() {
     await logout();
     nav('/login');
   }
+  if (user?.mustChangePassword) return <main className="main"><h1>첫 로그인 비밀번호 변경</h1><AccountTab /><button onClick={signOut}>로그아웃</button></main>;
   return (
     <div className="app">
       <aside className="sidebar">
@@ -33,7 +36,7 @@ export function Layout() {
           ))}
         </nav>
         <div className="user">
-          {user?.displayName} ({user?.role === 'admin' ? '관리자' : '강사'})
+          {user?.displayName} ({roleLabel(user?.role)})
           <div className="mt">
             <button
               className="sm"
@@ -68,7 +71,7 @@ export function Layout() {
               ))}
             </nav>
             <div className="mobile-account">
-              <span>{user?.displayName} ({user?.role === 'admin' ? '관리자' : '강사'})</span>
+              <span>{user?.displayName} ({roleLabel(user?.role)})</span>
               <button onClick={signOut}>로그아웃</button>
             </div>
           </div>

@@ -696,9 +696,10 @@ describe('기록 저장의 작은 응답 (휴대폰)', () => {
 
 describe('2차 리뷰 결함 회귀 (서버)', () => {
   it('구독 주소를 만든 사람이 비활성화되면 그 주소는 더 열리지 않는다', async () => {
-    const made = await asAdmin({ method: 'POST', url: '/api/users', payload: { username: 'feeduser', password: 'feeduser1234', displayName: '구독 테스트' } });
+    const made = await asAdmin({ method: 'POST', url: '/api/users', payload: { username: 'wb가상구독', password: 'feeduser1234', displayName: '구독 테스트' } });
     expect(made.statusCode).toBe(201);
-    const cookie = await login('feeduser', 'feeduser1234');
+    const cookie = await login('wb가상구독', 'feeduser1234');
+    expect((await app.inject({ method: 'POST', url: '/api/auth/password', headers: { cookie }, payload: { currentPassword: 'feeduser1234', newPassword: 'feeduser-changed1234' } })).statusCode).toBe(200);
     const asUser = (opts: Record<string, unknown>) => app.inject({ ...opts, headers: { cookie } } as never);
     const p = (await asUser({ method: 'POST', url: '/api/plans', payload: { curriculumId: SAMPLE_IDS.curriculumParallel, settings } })).json();
     const feed = (await asUser({ method: 'POST', url: `/api/plans/${p.id}/calendar-feeds`, payload: { audience: 'teacher', version: p.version } })).json().calendarFeeds[0];
@@ -709,7 +710,7 @@ describe('2차 리뷰 결함 회귀 (서버)', () => {
     await asAdmin({ method: 'PUT', url: `/api/users/${made.json().id}`, payload: { active: true } });
     expect((await app.inject({ method: 'GET', url: `/api/feeds/${feed.token}.ics` })).statusCode).toBe(200);
     // 계획을 보관하면 404 (비활성화로 옛 로그인이 끊겼으므로 다시 로그인)
-    const cookie2 = await login('feeduser', 'feeduser1234');
+    const cookie2 = await login('wb가상구독', 'feeduser-changed1234');
     const asUser2 = (opts: Record<string, unknown>) => app.inject({ ...opts, headers: { cookie: cookie2 } } as never);
     expect((await asUser({ method: 'GET', url: `/api/plans/${p.id}` })).statusCode).toBe(401);
     const cur = (await asUser2({ method: 'GET', url: `/api/plans/${p.id}` })).json();
@@ -781,19 +782,19 @@ describe('3차 리뷰 결함 회귀 (서버)', () => {
 
   it('비밀번호를 바꾸거나 초기화하면 다른 기기의 로그인이 끊긴다', async () => {
     const admin = as(await loginTo('admin', 'admin1234'));
-    await admin({ method: 'POST', url: '/api/users', payload: { username: 'sess1', password: 'sess1pass!' } });
-    const c1 = await loginTo('sess1', 'sess1pass!');
-    const c2 = await loginTo('sess1', 'sess1pass!');
+    await admin({ method: 'POST', url: '/api/users', payload: { username: 'wb가상세션', password: 'sess1pass!' } });
+    const c1 = await loginTo('wb가상세션', 'sess1pass!');
+    const c2 = await loginTo('wb가상세션', 'sess1pass!');
     expect((await as(c1)({ method: 'POST', url: '/api/auth/password', payload: { currentPassword: 'sess1pass!', newPassword: 'sess1pass2!' } })).statusCode).toBe(200);
-    expect((await as(c1)({ method: 'GET', url: '/api/auth/me' })).json()?.username).toBe('sess1');
+    expect((await as(c1)({ method: 'GET', url: '/api/auth/me' })).json()?.username).toBe('wb가상세션');
     expect((await as(c2)({ method: 'GET', url: '/api/auth/me' })).json()).toBeNull();
     // 관리자 초기화는 모든 세션을 끊는다
     const users = (await admin({ method: 'GET', url: '/api/users' })).json();
-    const id = users.find((u: { username: string }) => u.username === 'sess1').id;
+    const id = users.find((u: { username: string }) => u.username === 'wb가상세션').id;
     expect((await admin({ method: 'PUT', url: `/api/users/${id}`, payload: { password: 'reset-pass-1' } })).statusCode).toBe(200);
     expect((await as(c1)({ method: 'GET', url: '/api/auth/me' })).json()).toBeNull();
     // 비활성화 뒤 다시 활성화해도 옛 세션은 살아나지 않는다
-    const c3 = await loginTo('sess1', 'reset-pass-1');
+    const c3 = await loginTo('wb가상세션', 'reset-pass-1');
     await admin({ method: 'PUT', url: `/api/users/${id}`, payload: { active: false } });
     await admin({ method: 'PUT', url: `/api/users/${id}`, payload: { active: true } });
     expect((await as(c3)({ method: 'GET', url: '/api/auth/me' })).json()).toBeNull();

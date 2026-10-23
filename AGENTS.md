@@ -2,19 +2,23 @@
 
 이 파일은 이 저장소에서 이어서 작업하는 코딩 에이전트를 위한 안내다. 사람용 설명은 [README.md](README.md)와 [docs/](docs/)에 있다.
 
-## 현재 상태 (2026-10-13)
+## 현재 상태 (2026-10-23)
 
-- 요구사항 v1.0 범위의 기능은 모두 구현되어 있다. 자동 테스트 222건 통과(shared 135 + server 71 + 운영 스크립트 7 + 웹 UI 9), 타입 검사·웹 빌드 오류 없음.
+- 요구사항 v1.0 범위의 기능은 모두 구현되어 있다. 자동 테스트 321건(31개 파일) 통과, 타입 검사·웹 빌드 오류 없음.
 - 14차에서 운영 환경·백업 보호를 보완하고, 보충 연결 제목 선택·모바일 더보기·표준 dialog·탭 키보드 조작을 추가했다.
 - 독립 코드 리뷰를 네 차례 했고 재현된 결함은 모두 고쳤다. 경과와 근거는 [docs/테스트결과.md](docs/테스트결과.md) (5·9·11·12차).
 - 남은 일은 대부분 사용자 결정·실제 자료·실제 기기 확인이 필요하다. 아래 '남은 작업' 참고.
+
+- 22차: API 키·원격 MCP·반년 보기까지 운영 반영. 외부 MCP `https://planner.wbcowork.com/mcp`(Bearer 지원 Streamable HTTP), 연결 관리: 설정 → API·MCP 연결. [연결 안내](docs/API-MCP-가이드.md). 계정·운영 문서·기존 터널 보존 검증 완료.
+- 원장 owner·관리자 admin은 일상 운영 권한을 공유하며 원장 계정은 원장만 관리한다. 신규 강사 아이디는 wb+한글 이름, 지정 초기값은 비밀 환경변수에서 읽고 최초 로그인 변경 전 업무/API/MCP를 차단한다. 기존 영문 계정·비밀번호·사용자 ID는 유지한다.
+- SYSTEM 계정의 부팅 트리거·1분 반복·실패 시 999회 재시도를 운영 등록했다. 서버 강제 종료 후 약 30초 안에 자동 복구와 로컬·외부 접속을 확인했다(23차). 실제 재부팅 검증은 사용자 요청으로 미실시했다.
 
 ## 실행·검증 명령
 
 Node 22.13 이상 필요(내장 `node:sqlite` 사용, 네이티브 모듈 없음). 포트 3987.
 
 **이 저장소가 있는 PC(C:\Users\wb\wb-edu)는 실제 학원 PC이며 운영 서버가 돌고 있다 (2026-10-13 배포).**
-- 운영 서버: 작업 스케줄러 'WB Planner Server'가 로그온 시 창 없이 실행, http://127.0.0.1:3987, 운영 DB `server/data/wb-edu.sqlite`, 기록 `server/data/logs/`.
+- 운영 서버: 작업 스케줄러 'WB Planner Server'가 SYSTEM 계정으로 로그인 없이 부팅 후 20초에 실행하고 1분 간격 복구, http://127.0.0.1:3987, 운영 DB `server/data/wb-edu.sqlite`, 기록 `server/data/logs/`.
 - 매일 23:00 'WB Planner Backup'이 운영 DB를 `server/data/backups/`에 백업.
 - 외부 접속은 `https://planner.wbcowork.com` → 기존 Cloudflare 터널 `wb-apps-wb1` → 이 PC의 `http://127.0.0.1:3987`이다. 기존 앱 연결 10개와 catch-all 설정을 보존하고 플래너 연결만 추가했다. 로컬·외부 접속은 같은 운영 DB를 쓴다.
 - 개발·확인용 데모 서버는 3988 포트로 띄운다: `npm run start:demo` (`.claude/launch.json`도 3988). `npm start`(3987)는 이 PC에서 운영 서버와 포트가 겹친다.
@@ -53,7 +57,7 @@ npm run typecheck
 
 ## 구조
 
-- `shared/src` — 순수 TypeScript 도메인 로직. 편성 엔진(`scheduler.ts`), 진도 집계(`progress.ts`), 5종 보기(`views.ts`), 출력 열 정의(`output.ts`), 과정 조립(`assembler.ts`), 표·목차 가져오기(`importer.ts`, `toc.ts`), 달력(`ical.ts`), 날짜(`dates.ts`, 한국 시간 기준).
+- `shared/src` — 순수 TypeScript 도메인 로직. 편성 엔진(`scheduler.ts`), 진도 집계(`progress.ts`), 6종 보기(`views.ts`, 학년도 기준 반년 포함), 출력 열 정의(`output.ts`), 과정 조립(`assembler.ts`), 표·목차 가져오기(`importer.ts`, `toc.ts`), 달력(`ical.ts`), 날짜(`dates.ts`, 한국 시간 기준).
 - `server/src` — Fastify 5 + `node:sqlite`. 문서는 `docs` 테이블에 JSON으로 저장하고 `version`으로 낙관적 동시성 제어(다르면 409). 라우트는 `routes/*.ts`, 엑셀은 `export.ts`.
 - `web/src` — Vite 7 + React 19 + react-router 7. 화면은 `pages/*.tsx`, 공용 UI·훅은 `components/ui.tsx`.
 - 테스트: `shared/test/*.test.ts`, `server/test/*.test.ts` (메모리 DB·`app.inject`), `scripts/test/*.test.mjs` (OS 임시 폴더만 사용), `web/test/*.test.tsx` (기존 React 서버 렌더링·탭 조작). 실제 브라우저 동작은 별도 확인한다.
@@ -90,7 +94,7 @@ npm run typecheck
 
 ### 2. 구현은 되어 있으나 실제 환경에서 확인하지 못한 것
 
-- PC를 다시 로그온했을 때의 서버 자동 시작 (작업 등록·첫 실행·백업·서버 제어는 13차 실제 배포에서 확인).
+- 실제 재부팅 후 로그인 전 서버 시작 (SYSTEM 부팅 작업 등록과 실제 서버 종료 후 자동 복구는 23차 확인, 재부팅은 미실시).
 - Caddy 리버스 프록시와 인증서 발급.
 - 실제 휴대폰의 손가락 끌어 놓기 (브라우저의 휴대폰 화면 흉내와 터치 이벤트로만 확인).
 - 구글·애플 캘린더가 구독 주소를 주기적으로 받아 가는지 (ical.js 파싱 검증만 함, 인터넷에 열린 서버 필요).

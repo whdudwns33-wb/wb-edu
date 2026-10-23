@@ -1,3 +1,4 @@
+import { isManager } from '@wb/shared';
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import type { AppSettings, ImportPreview, LearningItem, LearningObjective, ProgressUnit, Textbook, TimingSuggestion } from '@wb/shared';
@@ -26,7 +27,7 @@ export function TextbooksPage() {
           <label className="check">
             <input type="checkbox" checked={showArchived} onChange={(e) => setShowArchived(e.target.checked)} /> 보관 포함
           </label>
-          {user?.role === 'admin' && (
+          {isManager(user?.role) && (
             <Link className="btn primary" to="/textbooks/new">
               + 교재 등록
             </Link>
@@ -129,7 +130,7 @@ export function TextbookEditorPage() {
   const { data: settings } = useAsync(() => get<AppSettings>('/api/settings'), []);
   const { data: objectives } = useAsync(() => get<LearningObjective[]>('/api/objectives'), []);
   const attachments = useAsync(() => get<Textbook[]>('/api/textbooks?archived=1'), [], [doc?.version]);
-  const readOnly = user?.role !== 'admin';
+  const readOnly = !isManager(user?.role);
   // 마지막으로 불러오거나 저장한 상태 (편집 중인지 판단용)
   const [baseline, setBaseline] = useState('');
   const loaded = (t: Textbook) => {
@@ -163,6 +164,8 @@ export function TextbookEditorPage() {
     .map((tb) => ({ ...tb, items: tb.items.filter((it) => !it.excluded && !doc?.items.some((own) => own.id === it.id)).sort((a, b) => a.order - b.order) }))
     .filter((tb) => tb.items.length > 0), [attachments.data, doc?.id, doc?.items]);
   const attachmentIds = new Set(attachmentGroups.flatMap((tb) => tb.items.map((it) => it.id)));
+  const prerequisiteGroups = [...(doc && !doc.archived ? [{ ...doc, items: doc.items.filter((it) => !it.excluded).sort((a, b) => a.order - b.order) }] : []), ...attachmentGroups];
+  const prerequisiteIds = new Set(prerequisiteGroups.flatMap((tb) => tb.items.map((it) => it.id)));
 
   if (error && !doc) return <Alert kind="danger">{error}</Alert>;
   if (!doc) return <Loading />;
@@ -397,11 +400,12 @@ export function TextbookEditorPage() {
           )}
         </div>
         <p className="muted small">쪽·문항 등 범위형 단위는 시작~끝(양 끝 포함)으로 수량을 계산합니다. 12~23쪽 = 12쪽. 예상 소요시간은 직접 입력값과 추정값을 구분해 표시합니다.</p>
+        <p className="muted small">선수 항목은 같은 교재와 다른 교재에서 선택할 수 있습니다(Ctrl 또는 ⌘로 여러 항목 선택·해제). 다른 교재의 선수는 계획에도 그 교재를 포함해야 합니다. 사용 중인 선수 항목은 연결을 먼저 정리해야 보관·제외·삭제할 수 있습니다.</p>
         <p className="muted small">보충 연결은 다른 교재의 항목을 제목으로 선택합니다. 보충형 과정에 그 교재를 주교재로 넣으면 선택한 항목 뒤에 붙습니다.</p>
         {attachments.error ? (
-          <Alert kind="warn">보충 연결 목록을 불러오지 못했습니다. {attachments.error} <button className="sm" onClick={attachments.reload}>다시 불러오기</button></Alert>
+          <Alert kind="warn">선수 항목·보충 연결 목록을 불러오지 못했습니다. {attachments.error} <button className="sm" onClick={attachments.reload}>다시 불러오기</button></Alert>
         ) : attachments.loading ? (
-          <p className="muted small">보충 연결 목록을 불러오는 중…</p>
+          <p className="muted small">선수 항목·보충 연결 목록을 불러오는 중…</p>
         ) : attachmentGroups.length === 0 && <p className="muted small">연결할 다른 교재의 학습항목이 없습니다. 주교재를 등록하고 제외하지 않은 항목을 추가하세요.</p>}
         {doc.items.length === 0 ? (
           <Empty>학습항목이 없습니다. 행을 추가하거나 표를 붙여넣어 가져오세요. 교재명만으로 목차를 자동 생성하지 않습니다.</Empty>
@@ -496,15 +500,19 @@ export function TextbookEditorPage() {
                     <td>
                       <input type="checkbox" checked={it.splittable} disabled={readOnly} onChange={(e) => setItem(i, { splittable: e.target.checked })} />
                     </td>
-                    <td style={{ minWidth: 140 }}>
-                      <select multiple size={2} value={it.prerequisiteItemIds} disabled={readOnly} onChange={(e) => setItem(i, { prerequisiteItemIds: [...e.target.selectedOptions].map((o) => o.value) })}>
-                        {doc.items
-                          .filter((o) => o.id !== it.id)
-                          .map((o) => (
-                            <option key={o.id} value={o.id}>
-                              {o.order}. {o.title}
-                            </option>
-                          ))}
+                    <td style={{ minWidth: 240 }}>
+                      <select multiple size={3} value={it.prerequisiteItemIds} disabled={readOnly || attachments.loading || !!attachments.error} aria-label={`${it.title || `${i + 1}번 항목`} 선수 항목`} onChange={(e) => setItem(i, { prerequisiteItemIds: [...e.target.selectedOptions].map((o) => o.value) })}>
+                        {it.prerequisiteItemIds.filter((p) => !prerequisiteIds.has(p) || p === it.id).map((p) => {
+                          const targetBook = [doc, ...(attachments.data ?? [])].find((tb) => tb.items.some((item) => item.id === p));
+                          const target = targetBook?.items.find((item) => item.id === p);
+                          const state = p === it.id ? '자기 자신' : targetBook?.archived ? '보관' : target?.excluded ? '제외' : '찾을 수 없음';
+                          return <option key={p} value={p}>{target ? `${targetBook?.title}${targetBook?.edition ? ` · ${targetBook.edition}` : ''} / ${target.title}` : '기존 선수 항목'} ({state} · 해제 또는 복원 필요)</option>;
+                        })}
+                        {prerequisiteGroups.map((tb) => (
+                          <optgroup key={tb.id || 'editing'} label={`${tb.id === doc.id ? '같은 교재' : '다른 교재'} · ${tb.title || '교재명 입력 필요'} · ${tb.edition || '판본 미입력'}`}>
+                            {tb.items.filter((target) => target.id !== it.id).map((target) => <option key={target.id} value={target.id}>{tb.title || '교재명 입력 필요'} · {tb.edition || '판본 미입력'} / {target.order}. {target.title}</option>)}
+                          </optgroup>
+                        ))}
                       </select>
                     </td>
                     <td>

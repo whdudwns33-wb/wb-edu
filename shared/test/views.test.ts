@@ -92,6 +92,25 @@ describe('5종 보기 집계 일치 (시나리오 3)', () => {
   });
 });
 
+describe('분할된 수량형 진도 표시', () => {
+  it.each([
+    [[0.1, 0.15, 0.25], '1단원'],
+    [[0.25, 0.25, 0.5], '2단원'],
+  ] as const)('세 배정을 분할 비율과 전체 수량으로 집계한다: %s', (fractions, expected) => {
+    const { curricula, tbs } = sampleWorld();
+    const basic = curricula.find((c) => c.id === SAMPLE_IDS.curriculumBasic)!;
+    const { plan } = makePlan(basic, tbs, baseSettings());
+    const assignment = plan.assignments[0];
+    const item = plan.snapshot.textbooks.find((tb) => tb.id === assignment.textbookId)!.items.find((it) => it.id === assignment.itemId)!;
+    item.progressUnit = 'unit';
+    item.range = undefined;
+    item.quantity = 2;
+    plan.assignments = fractions.map((fraction, i) => ({ ...assignment, id: `split-${i}`, portion: undefined, fraction }));
+    plan.assignments.push({ ...assignment, id: 'practice', portion: undefined, fraction: 0.5, activity: 'practice' });
+    expect(summarizeLessons(plan, plan.lessons).textbooks[0].rangeText).toBe(`${expected} · 연습 1단원`);
+  });
+});
+
 describe('학습목표 지도', () => {
   it('계획 배치·진행·이해 확인·미배정을 구분한다', () => {
     const { curricula, tbs } = sampleWorld();

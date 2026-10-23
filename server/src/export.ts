@@ -7,7 +7,7 @@ import type { OutputTemplate, Plan } from '@wb/shared';
 import { buildPlanViews, dayRows, fmtMinutes, isISODate, resolveColumns, resolveSummaryColumns, type DayView } from '@wb/shared';
 
 export type Audience = 'teacher' | 'student';
-export type Level = 'year' | 'quarter' | 'month' | 'week' | 'day';
+export type Level = 'year' | 'halfyear' | 'quarter' | 'month' | 'week' | 'day';
 
 export interface ExportOptions {
   audience: Audience;
@@ -41,6 +41,7 @@ export async function buildWorkbook(plan: Plan, opts: ExportOptions): Promise<Bu
     ['사용 교재', h.textbooks.join(' / ')],
     ['계획 버전', `v${h.planVersion} (과정 ${h.curriculumTitle} v${h.curriculumVersion})`],
     ['상태', h.status],
+    ['집계 기준', '등록된 학습 범위만 집계합니다. 배정이 없는 구간은 학습 내용·목표 미확정입니다. 반년은 학년도 시작월부터 6개월씩 구분합니다.'],
     ['편성 방식', h.mode],
     ['총분량(수업시간)', fmtMinutes(h.totalMinutes)],
     ...(range ? ([['출력 범위', `${range.from} ~ ${range.to} (이 범위 수업 ${views.summary.lessonCount}회, 배정 ${fmtMinutes(views.summary.assignedMinutes)})`]] as Array<[string, string]>) : []),
@@ -64,6 +65,14 @@ export async function buildWorkbook(plan: Plan, opts: ExportOptions): Promise<Bu
     for (const y of views.years) ws.addRow(cols.map((c) => c.value(y, sctx)));
     ws.addRow([]);
     ws.addRow(['교육 목표', plan.snapshot.curriculumTitle]);
+    autoWidth(ws);
+  }
+
+  if (opts.levels.includes('halfyear')) {
+    const ws = wb.addWorksheet('반년');
+    const cols = resolveSummaryColumns(opts.template, opts.audience, 'halfyear');
+    ws.addRow(cols.map(c => c.label)).font = { bold: true };
+    for (const half of views.halfYears) ws.addRow(cols.map(c => c.value(half, sctx)));
     autoWidth(ws);
   }
 

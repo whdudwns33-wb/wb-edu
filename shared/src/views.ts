@@ -1,10 +1,11 @@
 /**
  * 연간·분기·월간·주간·일간 보기 집계.
- * 다섯 보기는 모두 같은 원본(plan.lessons / assignments / records)과
+ * 여섯 보기는 모두 같은 원본(plan.lessons / assignments / records)과
  * 같은 집계 함수(summarizeLessons)를 사용한다. 월을 걸치는 주는 실제 수업일 기준으로 센다.
  */
 import type { Activity, Assignment, ISODate, ItemRange, Lesson, Plan, ProgressRecord, ProgressUnit, Track } from './types.ts';
 import { ACTIVITY_LABEL, PROGRESS_UNIT_LABEL, RECORD_STATUS_LABEL, TRACK_LABEL } from './types.ts';
+import { LEARNING_APPROACH_LABEL } from './learning-options.ts';
 import {
   academicQuarter,
   academicQuarterRange,
@@ -20,9 +21,9 @@ import {
 } from './dates.ts';
 import { snapshotItemIndex } from './scheduler.ts';
 import { itemCompletion, latestRecordFor, assignmentPortion, recordCompleted } from './progress.ts';
-import { rangeLabel, subtractRanges, isRangedUnit, normalizeRanges } from './units.ts';
+import { rangeLabel, subtractRanges, isRangedUnit, normalizeRanges, itemQuantity } from './units.ts';
 
-export type ViewLevel = 'year' | 'quarter' | 'month' | 'week' | 'day';
+export type ViewLevel = 'year' | 'halfyear' | 'quarter' | 'month' | 'week' | 'day';
 
 export interface TextbookRangeSummary {
   textbookId: string;
@@ -135,9 +136,12 @@ export interface YearView {
   trackTargets: Array<{ track: Track; label: string; minutes: number; itemCount: number }>;
 }
 
+export interface HalfYearView extends YearView { key: string; half: 1 | 2; }
+
 export interface PlanViews {
   header: PlanHeader;
   years: YearView[];
+  halfYears: HalfYearView[];
   summary: LessonSummary;
   completionBasis: string;
 }
@@ -224,9 +228,9 @@ export function summarizeLessons(plan: Plan, lessons: Lesson[]): LessonSummary {
       const p = assignmentPortion(a, info.item);
       if (a.activity === 'new') {
         if (p.range) agg.newRanges.push(p.range);
-        else agg.newCount += 1;
+        else agg.newCount += p.fraction * itemQuantity(info.item);
       } else if (p.range) agg.otherRanges.set(a.activity, [...(agg.otherRanges.get(a.activity) ?? []), p.range]);
-      else agg.otherCount.set(a.activity, (agg.otherCount.get(a.activity) ?? 0) + 1);
+      else agg.otherCount.set(a.activity, (agg.otherCount.get(a.activity) ?? 0) + p.fraction * itemQuantity(info.item));
       if (!agg.titles.includes(info.item.title)) agg.titles.push(info.item.title);
     }
     tbAgg.set(key, agg);
@@ -240,9 +244,9 @@ export function summarizeLessons(plan: Plan, lessons: Lesson[]): LessonSummary {
   s.textbooks = [...tbAgg.values()].map((agg) => {
     const parts: string[] = [];
     if (agg.newRanges.length) parts.push(fmtRanges(agg.newRanges, agg.unit));
-    else if (agg.newCount) parts.push(`${agg.newCount}${unitLabel(agg.unit)}`);
+    else if (agg.newCount) parts.push(`${Number(agg.newCount.toFixed(2))}${unitLabel(agg.unit)}`);
     for (const [act, rs] of agg.otherRanges) parts.push(`${ACTIVITY_LABEL[act]} ${fmtRanges(rs, agg.unit)}`);
-    for (const [act, n] of agg.otherCount) parts.push(`${ACTIVITY_LABEL[act]} ${n}${unitLabel(agg.unit)}`);
+    for (const [act, n] of agg.otherCount) parts.push(`${ACTIVITY_LABEL[act]} ${Number(n.toFixed(2))}${unitLabel(agg.unit)}`);
     return { textbookId: agg.textbookId, title: tbTitle.get(agg.textbookId) ?? agg.textbookId, unit: unitLabel(agg.unit), rangeText: parts.join(' · '), minutes: agg.minutes, itemTitles: agg.titles };
   });
   s.assessmentDates = [...new Set(s.assessmentDates)].sort();
@@ -469,6 +473,17 @@ export function yearViews(plan: Plan, lessons: Lesson[]): YearView[] {
     });
 }
 
+/** 반년은 기존 학년도 시작월 기준 두 개의 연속 6개월로 나눈다. */
+export function halfYearViews(plan: Plan, lessons: Lesson[]): HalfYearView[] {
+  return yearViews(plan, lessons).flatMap(year => ([1, 2] as const).flatMap(half => {
+    const from = academicQuarterRange(year.academicYear, half === 1 ? 1 : 3, plan.settings.academicYearStartMonth || 3).from;
+    const to = academicQuarterRange(year.academicYear, half === 1 ? 2 : 4, plan.settings.academicYearStartMonth || 3).to;
+    const selected = lessons.filter(l => l.date >= from && l.date <= to);
+    const view = yearViews(plan, selected)[0];
+    return view ? [{ ...view, key: `${year.academicYear}-H${half}`, half, from, to, label: `${year.academicYear}학년도 ${half === 1 ? '전반기' : '후반기'} (${from} ~ ${to})` }] : [];
+  }));
+}
+
 export function planHeader(plan: Plan): PlanHeader {
   const unassigned = plan.unassigned.filter((u) => u.reason !== 'excluded');
   const dates = plan.lessons.map((l) => l.date);
@@ -491,7 +506,7 @@ export function planHeader(plan: Plan): PlanHeader {
     unassignedCount: unassigned.length,
     unassignedMinutes: unassigned.reduce((s, u) => s + u.minutes, 0),
     lastChange,
-    mode: plan.settings.mode === 'period' ? '기간 우선' : '속도 우선',
+    mode: `${plan.settings.mode === 'period' ? '기간 우선' : '속도 우선'}${plan.learningApproach ? ' · 처음 선택한 안: ' + LEARNING_APPROACH_LABEL[plan.learningApproach] : ''}`,
     academicYearStartMonth: plan.settings.academicYearStartMonth,
   };
 }
@@ -503,6 +518,7 @@ export function buildPlanViews(plan: Plan, range?: { from: ISODate; to: ISODate 
   return {
     header: planHeader(plan),
     years: yearViews(plan, lessons),
+    halfYears: halfYearViews(plan, lessons),
     summary: summarizeLessons(plan, lessons),
     completionBasis: '완료율 = 새 학습 활동의 완료 기록(합집합) ÷ 전체 분량. 교재별·단위별로 따로 계산하며 복습·연습·숙제는 완료량에 포함하지 않는다.',
   };

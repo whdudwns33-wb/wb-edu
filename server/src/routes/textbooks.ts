@@ -55,17 +55,13 @@ export function normalizeTextbook(raw: unknown, store: AppContext['store'], exis
   if (!title) throw new HttpError(400, '교재명은 필수입니다.');
   const kind = str(r.kind) === 'inhouse' ? 'inhouse' : 'market';
   const items = arr(r.items).map((it, i) => normalizeItem(it, i));
-  // 항목 id 중복·선수 참조 검사
+  // 항목 id 중복 검사
   const ids = new Set<string>();
   for (const it of items) {
     if (ids.has(it.id)) throw new HttpError(400, `학습항목 id 중복: ${it.id}`);
     ids.add(it.id);
   }
-  for (const it of items) {
-    if (it.prerequisiteItemIds.includes(it.id)) throw new HttpError(400, `'${it.title}'은(는) 자기 자신을 선수 학습으로 가질 수 없습니다.`);
-    const unknown = it.prerequisiteItemIds.filter((p) => !ids.has(p));
-    if (unknown.length) throw new HttpError(400, `'${it.title}'의 선수 학습에 이 교재에 없는 항목이 있습니다: ${unknown.join(', ')}`);
-  }
+  validateTextbookPrerequisites(store, { id: existing?.id ?? '', title, edition: str(r.edition), items, archived: bool(r.archived, existing?.archived) });
   const attachmentTargets = new Set(store.list<Textbook>('textbook').filter((tb) => tb.id !== existing?.id).flatMap((tb) => tb.items.filter((it) => !it.excluded).map((it) => it.id)));
   for (const it of items) {
     if (!it.attachToItemId) continue;
@@ -74,20 +70,6 @@ export function normalizeTextbook(raw: unknown, store: AppContext['store'], exis
     if (ids.has(it.attachToItemId)) throw new HttpError(400, `'${it.title}'의 보충 연결은 다른 교재의 학습항목을 선택하세요.`);
     if (!attachmentTargets.has(it.attachToItemId)) throw new HttpError(400, `'${it.title}'의 보충 연결 대상을 찾을 수 없거나 보관·제외된 항목입니다. 연결을 해제하거나 다른 항목을 선택하세요.`);
   }
-  // 선수 관계가 돌고 돌면(가→나→가) 어느 항목도 먼저 배정할 수 없어, 편성에서 모두 '시간 부족'처럼 보인다
-  const byId = new Map(items.map((it) => [it.id, it]));
-  const state = new Map<string, 1 | 2>();
-  const visit = (id: string, path: string[]): void => {
-    if (state.get(id) === 2) return;
-    if (state.get(id) === 1) {
-      const cycle = path.slice(path.indexOf(id)).concat(id).map((x) => byId.get(x)?.title ?? x);
-      throw new HttpError(400, `선수 학습 관계가 순환합니다: ${cycle.join(' → ')}`);
-    }
-    state.set(id, 1);
-    for (const p of byId.get(id)?.prerequisiteItemIds ?? []) visit(p, [...path, id]);
-    state.set(id, 2);
-  };
-  for (const it of items) visit(it.id, []);
   const verification = ['unverified', 'reviewing', 'verified'].includes(str(r.verification)) ? (str(r.verification) as Textbook['verification']) : 'unverified';
   const defaultUnit = UNITS.includes(str(r.defaultUnit)) ? (str(r.defaultUnit) as Textbook['defaultUnit']) : items[0]?.progressUnit ?? 'page';
   return {
@@ -114,6 +96,44 @@ export function normalizeTextbook(raw: unknown, store: AppContext['store'], exis
     items,
     defaultUnit,
   };
+}
+
+/** 수정 후보를 포함한 전교재 선수 관계를 검사하며, 참조된 항목을 말없이 없애지 않는다. */
+function validateTextbookPrerequisites(store: AppContext['store'], candidate: Pick<Textbook, 'id' | 'title' | 'edition' | 'items' | 'archived'>): void {
+  const stored = store.list<Textbook>('textbook', { includeArchived: true });
+  const previous = stored.find((tb) => tb.id === candidate.id);
+  const textbooks = [...stored.filter((tb) => tb.id !== candidate.id), candidate];
+  const byId = new Map<string, { item: LearningItem; textbook: typeof candidate }>();
+  for (const textbook of textbooks) {
+    for (const item of textbook.items) {
+      if (byId.has(item.id)) throw new HttpError(400, `교재 간 학습항목 id가 중복됩니다: ${item.id}`);
+      byId.set(item.id, { item, textbook });
+    }
+  }
+  const label = (id: string) => {
+    const info = byId.get(id)!;
+    return `${info.textbook.title}${info.textbook.edition ? ` · ${info.textbook.edition}` : ''} / ${info.item.title}`;
+  };
+  for (const [id, { item, textbook }] of byId) {
+    for (const prerequisiteId of item.prerequisiteItemIds) {
+      if (prerequisiteId === id) throw new HttpError(400, `'${label(id)}'은(는) 자기 자신을 선수 학습으로 가질 수 없습니다.`);
+      const target = byId.get(prerequisiteId);
+      if (!target) throw new HttpError(400, `'${label(id)}'의 선수 항목을 찾을 수 없습니다: ${prerequisiteId}. 선수 관계를 먼저 정리하세요.`);
+      const isNewReference = textbook.id === candidate.id && !previous?.items.find((old) => old.id === id)?.prerequisiteItemIds.includes(prerequisiteId);
+      if ((!textbook.archived && !item.excluded || isNewReference) && (target.textbook.archived || target.item.excluded)) {
+        throw new HttpError(400, `'${label(id)}'의 선수 항목 '${label(prerequisiteId)}'은(는) 보관·제외되어 사용할 수 없습니다. 선수 관계를 먼저 정리하거나 해당 항목을 복원하세요.`);
+      }
+    }
+  }
+  const state = new Map<string, 1 | 2>();
+  const visit = (id: string, path: string[]): void => {
+    if (state.get(id) === 2) return;
+    if (state.get(id) === 1) throw new HttpError(400, `선수 학습 관계가 순환합니다: ${path.slice(path.indexOf(id)).concat(id).map(label).join(' → ')}`);
+    state.set(id, 1);
+    for (const prerequisiteId of byId.get(id)!.item.prerequisiteItemIds) visit(prerequisiteId, [...path, id]);
+    state.set(id, 2);
+  };
+  for (const id of byId.keys()) visit(id, []);
 }
 
 /**
@@ -195,6 +215,7 @@ export function registerTextbookRoutes(app: FastifyInstance, ctx: AppContext) {
     const existing = store.mustGet<Textbook>('textbook', id);
     const archived = bool((req.body as Record<string, unknown>)?.archived, true);
     const doc = touched({ ...existing, archived }, user, ctx.now());
+    validateTextbookPrerequisites(store, doc);
     const saved = store.update('textbook', doc, existing.version);
     store.audit({ at: doc.updatedAt, userId: user.id, kind: 'textbook', docId: id, action: archived ? 'archive' : 'restore', detail: doc.title });
     return saved;
@@ -215,6 +236,7 @@ export function registerTextbookRoutes(app: FastifyInstance, ctx: AppContext) {
       if (it.attachToItemId) it.attachToItemId = idMap.get(it.attachToItemId) ?? it.attachToItemId;
     }
     const doc: Textbook = { ...structuredClone(src), id: genId(), title: `${src.title} (복제)`, items, ...newMeta(user, at, src.isSample), verification: 'unverified' };
+    validateTextbookPrerequisites(store, doc);
     store.insert('textbook', doc);
     store.audit({ at, userId: user.id, kind: 'textbook', docId: doc.id, action: 'clone', detail: `from ${src.id}` });
     reply.code(201);

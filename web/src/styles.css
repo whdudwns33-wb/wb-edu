@@ -56,6 +56,28 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; backgrou
 .grid.cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .grid.cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .grid.cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.plan-options { border: none; padding: 0; margin: 16px 0; min-width: 0; }
+.plan-inputs { border: none; padding: 0; margin: 0; min-width: 0; }
+.plan-options legend { font-weight: 600; margin-bottom: 8px; }
+.plan-option { display: block; border: 1px solid var(--line); border-radius: var(--radius); padding: 12px; cursor: pointer; }
+.plan-option.selected { border-color: var(--primary); background: var(--primary-soft); }
+.plan-option-heading { display: flex; width: 100%; flex-wrap: wrap; }
+.plan-option-heading .badge { margin-left: auto; }
+.plan-option { min-width: 0; transition: border-color .15s, background-color .15s; }
+.plan-option:hover { border-color: var(--primary); }
+.plan-option:focus-within { outline: 2px solid var(--primary); outline-offset: 2px; }
+.plan-option dl { margin: 12px 0 0; font-size: 13px; }
+.plan-option dl > div { display: flex; justify-content: space-between; gap: 8px; padding: 4px 0; }
+.plan-option dt { color: var(--muted); }
+.plan-option dd { margin: 0; font-variant-numeric: tabular-nums; text-align: right; }
+.plan-detail-meta { display: grid; gap: 2px; margin-top: 7px; }
+.plan-detail-meta span { overflow-wrap: anywhere; }
+.plan-detail-tabs .tabs { flex-wrap: wrap; overflow-x: visible; }
+.plan-view-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px 16px; flex-wrap: wrap; }
+.plan-view-toolbar .tabs { margin: 0; }
+.plan-period-tabs .tabs { flex-wrap: wrap; overflow-x: visible; }
+.plan-view-summary { padding: 9px 12px; margin-bottom: 12px; background: var(--primary-soft); border-radius: var(--radius); }
+.plan-view-summary .muted { color: var(--text); }
 .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .row.between { justify-content: space-between; }
 .stack { display: flex; flex-direction: column; gap: 8px; }
@@ -117,6 +139,24 @@ table input[type='number'] { min-width: 64px; }
 table input:not([type]), table input[type='text'], table input[type='date'] { min-width: 110px; }
 table select { min-width: 72px; }
 table input[type='checkbox'] { min-width: 0; width: 16px; }
+
+/* 계획 목록 */
+.plans-heading, .plans-filters { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.plans-heading { margin-bottom: 14px; }
+.plans-heading h1 { margin-bottom: 2px; }
+.plans-heading p { margin: 0; }
+.plans-filters { justify-content: flex-start; margin-bottom: 12px; }
+.plans-filters input[type='search'] { width: min(340px, 100%); }
+.plans-results { min-height: 76px; }
+.plans-table th, .plans-table td { padding: 11px 10px; }
+.plans-table th:first-child { width: 23%; }
+.plans-table .plans-title-cell > a { font-weight: 600; }
+.plans-table .plans-title-cell > .badge { margin-left: 4px; }
+.plans-table .plans-title-cell .small { margin-top: 3px; }
+.plans-progress span { display: block; white-space: nowrap; }
+.plans-progress span + span { margin-top: 3px; }
+.plans-pending { color: var(--danger); font-weight: 600; }
+.plans-cards { display: none; }
 
 /* 탭 */
 .tabs { display: flex; gap: 2px; border-bottom: 2px solid var(--line); margin-bottom: 14px; overflow-x: auto; }
@@ -215,6 +255,22 @@ table input[type='checkbox'] { min-width: 0; width: 16px; }
   .modal { padding: 12px; }
   .hide-mobile { display: none !important; }
   .topbar h1 { font-size: 17px; }
+  .plans-heading h1 { font-size: 20px; }
+  .plans-filters { flex-wrap: wrap; }
+  .plans-filters input[type='search'] { flex: 1 1 220px; }
+  .plans-results.panel { padding: 0; background: none; border: 0; box-shadow: none; }
+  .plans-results > .muted { padding: 16px; }
+  .plans-table { display: none; }
+  .plans-cards { display: grid; gap: 10px; list-style: none; margin: 0; padding: 0; }
+  .plans-cards li { min-width: 0; padding: 16px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); box-shadow: var(--shadow); }
+  .plans-card-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+  .plans-card-heading > a { font-weight: 700; font-size: 15px; line-height: 1.4; overflow-wrap: anywhere; }
+  .plans-card-heading .badge { flex-shrink: 0; margin-top: 2px; }
+  .plans-card-subtitle { display: flex; flex-wrap: wrap; gap: 4px 6px; align-items: center; margin-top: 6px; color: var(--muted); font-size: 12px; }
+  .plans-cards dl { margin: 14px 0 0; padding-top: 10px; border-top: 1px solid var(--line); font-size: 12px; }
+  .plans-cards dl > div { display: grid; grid-template-columns: 38px minmax(0, 1fr); gap: 12px; padding: 4px 0; }
+  .plans-cards dt { color: var(--muted); }
+  .plans-cards dd { margin: 0; overflow-wrap: anywhere; }
 }
 @media (min-width: 861px) {
   .only-mobile { display: none !important; }

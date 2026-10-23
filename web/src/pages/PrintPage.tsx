@@ -5,8 +5,8 @@ import { dayRows, extraLabelMap, fmtMinutes, resolveColumns, resolveSummaryColum
 import { get } from '../api.ts';
 import { Loading, useAsync } from '../components/ui.tsx';
 
-type Level = 'year' | 'quarter' | 'month' | 'week' | 'day';
-const LEVEL_LABEL: Record<Level, string> = { year: '연간', quarter: '분기', month: '월간', week: '주간', day: '일간' };
+type Level = 'year' | 'halfyear' | 'quarter' | 'month' | 'week' | 'day';
+const LEVEL_LABEL: Record<Level, string> = { year: '연간', halfyear: '반년', quarter: '분기', month: '월간', week: '주간', day: '일간' };
 
 /**
  * A4 인쇄 보기. PDF 는 브라우저 인쇄 → 'PDF로 저장' 을 사용한다.
@@ -16,7 +16,7 @@ export function PrintPage() {
   const { id } = useParams();
   const [sp, setSp] = useSearchParams();
   const templateId = sp.get('template') ?? '';
-  const levels = (sp.get('levels') ?? 'year,quarter,month,week,day').split(',').filter((l): l is Level => l in LEVEL_LABEL);
+  const levels = (sp.get('levels') ?? 'year,halfyear,quarter,month,week,day').split(',').filter((l): l is Level => l in LEVEL_LABEL);
   const from = sp.get('from') ?? '';
   const to = sp.get('to') ?? '';
   const { data: plan } = useAsync(() => get<Plan>(`/api/plans/${id}`), [id]);
@@ -30,6 +30,7 @@ export function PrintPage() {
   const teacher = audience === 'teacher';
   const columns = useMemo(() => resolveColumns(template, audience), [template, audience]);
   const yearCols = useMemo(() => resolveSummaryColumns(template, audience, 'year'), [template, audience]);
+  const halfCols = useMemo(() => resolveSummaryColumns(template, audience, 'halfyear'), [template, audience]);
   const quarterCols = useMemo(() => resolveSummaryColumns(template, audience, 'quarter'), [template, audience]);
   const monthCols = useMemo(() => resolveSummaryColumns(template, audience, 'month'), [template, audience]);
   const v = data?.views;
@@ -108,6 +109,10 @@ export function PrintPage() {
               <th>미배정 범위</th>
               <td>{h.unassignedCount ? `${h.unassignedCount}건 (${fmtMinutes(h.unassignedMinutes)})` : '없음'}</td>
             </tr>
+            <tr>
+              <th>편성 방식</th>
+              <td colSpan={3}>{h.mode}</td>
+            </tr>
             {teacher && (
               <tr>
                 <th>작성자 / 검토자</th>
@@ -127,11 +132,13 @@ export function PrintPage() {
 
         {levels.includes('year') && (
           <section>
-            <h2>연간 계획</h2>
+            <h2>연간 계획</h2><p>등록된 학습 범위만 표시하며, 배정이 없는 구간은 학습 내용·목표 미확정입니다.</p>
             <p>교육 목표: {clean(h.curriculumTitle)} · 학년도 시작월 {h.academicYearStartMonth}월</p>
             <SummaryTable cols={yearCols} rows={v.years} rowKey={(y) => String(y.academicYear)} ctx={sctx} />
           </section>
         )}
+
+        {levels.includes('halfyear') && <section className="page-break"><h2>반년 계획 (학년도 기준)</h2><p>학년도 시작월부터 6개월씩 집계합니다. 배정이 없는 구간은 학습 내용·목표 미확정입니다.</p><SummaryTable cols={halfCols} rows={v.halfYears} rowKey={y => y.key} ctx={sctx} /></section>}
 
         {levels.includes('quarter') && (
           <section className="page-break">

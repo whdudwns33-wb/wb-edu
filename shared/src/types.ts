@@ -295,6 +295,7 @@ export interface ReviewComment {
 // ──────────────────────────────────────────────
 
 export type PlanMode = 'period' | 'pace'; // 기간 우선 / 속도 우선
+export type LearningApproach = 'foundation' | 'standard' | 'fast';
 export type PlanStatus = 'draft' | 'confirmed' | 'archived';
 
 export type LessonStatus = 'scheduled' | 'cancelled' | 'makeup' | 'holiday';
@@ -541,6 +542,8 @@ export interface Plan extends AuditMeta {
   target: string;
   /** 반 또는 개인 식별 (선택) — 복제 시 제외 */
   classOrStudentRef: string;
+  /** 처음 선택한 시간 배분안. 이후 일정 수정으로 시간 배분은 달라질 수 있다. */
+  learningApproach?: LearningApproach;
   curriculumId: string;
   snapshot: PlanSnapshot;
   settings: PlanSettings;
@@ -606,7 +609,7 @@ export interface OutputTemplate extends AuditMeta {
   /** 포함 열 (주간·일간 표) */
   columns: string[];
   /** 연간·분기·월간 표의 열 (없거나 비면 대상별 기본 열) */
-  summaryColumns?: { year?: string[]; quarter?: string[]; month?: string[] };
+  summaryColumns?: { year?: string[]; halfyear?: string[]; quarter?: string[]; month?: string[] };
   headerNote: string;
   footerNote: string;
 }
@@ -625,13 +628,22 @@ export interface AppSettings extends AuditMeta {
 // 사용자·권한
 // ──────────────────────────────────────────────
 
-export type UserRole = 'admin' | 'teacher';
+export type UserRole = 'owner' | 'admin' | 'teacher';
+
+export function isManager(role: UserRole | undefined): boolean {
+  return role === 'owner' || role === 'admin';
+}
+
+export function roleLabel(role: UserRole | undefined): string {
+  return role === 'owner' ? '원장' : role === 'admin' ? '관리자' : '강사';
+}
 
 export interface User {
   id: string;
   username: string;
   displayName: string;
   role: UserRole;
+  mustChangePassword?: boolean;
   active: boolean;
   createdAt: ISODateTime;
 }
@@ -641,4 +653,8 @@ export interface SessionUser {
   username: string;
   displayName: string;
   role: UserRole;
+  mustChangePassword?: boolean;
 }
+
+export function normalizeUsername(value: string): string { return value.trim().normalize('NFC'); }
+export function validUsername(value: string): boolean { return /^[a-zA-Z0-9_.-]{3,32}$/.test(value) || /^wb[가-힣]{2,20}[0-9]{0,3}$/.test(value); }

@@ -1,15 +1,17 @@
+import { ApiConnections } from '../components/ApiConnections.tsx';
+import { isManager, roleLabel } from '@wb/shared';
 import { useEffect, useState } from 'react';
 import type { AppSettings, Holiday, HolidaySet, OutputTemplate, User } from '@wb/shared';
-import { DEFAULT_SUMMARY_COLUMNS, MONTH_COLUMNS, OUTPUT_COLUMNS, QUARTER_COLUMNS, YEAR_COLUMNS, resolveColumns } from '@wb/shared';
+import { DEFAULT_SUMMARY_COLUMNS, MONTH_COLUMNS, OUTPUT_COLUMNS, QUARTER_COLUMNS, YEAR_COLUMNS, HALFYEAR_COLUMNS, resolveColumns } from '@wb/shared';
 import { get, post, put, del, errorMessage } from '../api.ts';
 import { useAuth } from '../auth.tsx';
 import { Alert, Badge, Field, Loading, Tabs, useAsync, usePrompt } from '../components/ui.tsx';
 
-type Tab = 'general' | 'holidays' | 'templates' | 'users' | 'samples' | 'account';
+type Tab = 'general' | 'holidays' | 'templates' | 'users' | 'samples' | 'account' | 'api';
 
 export function SettingsPage() {
   const { user } = useAuth();
-  const isAdmin = user?.role === 'admin';
+  const isAdmin = isManager(user?.role);
   const [tab, setTab] = useState<Tab>('general');
   return (
     <>
@@ -24,6 +26,7 @@ export function SettingsPage() {
           ...(isAdmin ? [{ key: 'users' as Tab, label: '사용자·권한' }] : []),
           { key: 'samples', label: '샘플 데이터' },
           { key: 'account', label: '내 계정' },
+          { key: 'api', label: 'API·MCP 연결' },
         ]}
         value={tab}
         onChange={setTab}
@@ -34,6 +37,7 @@ export function SettingsPage() {
       {tab === 'users' && isAdmin && <UsersTab />}
       {tab === 'samples' && <SamplesTab isAdmin={isAdmin} />}
       {tab === 'account' && <AccountTab />}
+      {tab === 'api' && <ApiConnections />}
     </>
   );
 }
@@ -222,10 +226,11 @@ function TemplateRow({ t, readOnly, onSaved, onError }: { t: OutputTemplate; rea
       </div>
       <div className="muted small mt">실제 출력 열 (선택 순서대로): {effective}</div>
       <details className="mt">
-        <summary className="small">연간·분기·월간 표 열</summary>
+        <summary className="small">연간·반년·분기·월간 표 열</summary>
         {(
           [
             ['year', '연간', YEAR_COLUMNS],
+            ['halfyear', '반년', HALFYEAR_COLUMNS],
             ['quarter', '분기', QUARTER_COLUMNS],
             ['month', '월간 (주별 행)', MONTH_COLUMNS],
           ] as const
@@ -258,8 +263,10 @@ function TemplateRow({ t, readOnly, onSaved, onError }: { t: OutputTemplate; rea
 }
 
 function UsersTab() {
+  const { user: me } = useAuth();
+  const { data: policy } = useAsync(() => get<{ initialPasswordConfigured: boolean }>('/api/users/password-policy'), []);
   const { data, loading, reload } = useAsync(() => get<User[]>('/api/users'), []);
-  const [f, setF] = useState({ username: '', displayName: '', password: '', role: 'teacher' });
+  const [f, setF] = useState({ username: '', displayName: '', password: '', role: 'teacher', useInitialPassword: true });
   const [err, setErr] = useState('');
   const { ask, element: promptEl } = usePrompt();
   if (loading) return <Loading />;
@@ -267,7 +274,7 @@ function UsersTab() {
     <div className="panel">
       {promptEl}
       {err && <Alert kind="danger">{err}</Alert>}
-      <p className="muted small">관리자는 공통 교재·양식·표준과정을 관리하고, 강사는 허용된 과정과 자기 실행 계획을 다룹니다. 권한은 서버에서 확인합니다.</p>
+      <p className="muted small">원장과 관리자는 공통 교재·양식·표준과정을 관리하고, 강사는 허용된 과정과 자기 실행 계획을 다룹니다. 권한은 서버에서 확인합니다.</p>
       <div className="table-wrap">
         <table className="compact">
           <thead>
@@ -284,16 +291,18 @@ function UsersTab() {
               <tr key={u.id}>
                 <td>{u.username}</td>
                 <td>{u.displayName}</td>
-                <td>{u.role === 'admin' ? '관리자' : '강사'}</td>
-                <td>{u.active ? <Badge kind="ok">활성</Badge> : <Badge>비활성</Badge>}</td>
+                <td>{roleLabel(u.role)}</td>
+                <td>{u.active ? <Badge kind="ok">활성</Badge> : <Badge>비활성</Badge>}{u.mustChangePassword && <Badge>비밀번호 변경 필요</Badge>}</td>
                 <td className="row">
-                  <button className="sm" onClick={() => put(`/api/users/${u.id}`, { active: !u.active }).then(reload).catch((e) => setErr(errorMessage(e)))}>
+                  <button className="sm" disabled={u.role === 'owner' && me?.role !== 'owner'} onClick={async () => { const name = await ask({ title: '이름 변경', label: '표시할 이름', defaultValue: u.displayName }); if (name) put(`/api/users/${u.id}`, { displayName: name }).then(reload).catch(e => setErr(errorMessage(e))); }}>이름 변경</button>
+                  {policy?.initialPasswordConfigured && <button className="sm" disabled={u.role === 'owner'} onClick={async () => { if (await ask({ title: '초기 비밀번호로 재설정', label: u.displayName + '의 기존 로그인과 외부 연결 키를 끊고 다음 로그인에서 변경하도록 합니다.', type: 'confirm', okLabel: '재설정' })) put(`/api/users/${u.id}`, { useInitialPassword: true }).then(reload).catch(e => setErr(errorMessage(e))); }}>초기값으로 재설정</button>}
+                  <button className="sm" disabled={u.role === 'owner'} onClick={() => put(`/api/users/${u.id}`, { active: !u.active }).then(reload).catch((e) => setErr(errorMessage(e)))}>
                     {u.active ? '비활성화' : '활성화'}
                   </button>
-                  <button className="sm" onClick={() => put(`/api/users/${u.id}`, { role: u.role === 'admin' ? 'teacher' : 'admin' }).then(reload).catch((e) => setErr(errorMessage(e)))}>
-                    {u.role === 'admin' ? '강사로' : '관리자로'}
+                  <button className="sm" disabled={u.role === 'owner'} onClick={() => put(`/api/users/${u.id}`, { role: isManager(u.role) ? 'teacher' : 'admin' }).then(reload).catch((e) => setErr(errorMessage(e)))}>
+                    {isManager(u.role) ? '강사로' : '관리자로'}
                   </button>
-                  <button className="sm" onClick={async () => { const p = await ask({ title: `${u.username} 비밀번호 재설정`, label: '새 비밀번호 (8자 이상)', type: 'password' }); if (p) put(`/api/users/${u.id}`, { password: p }).then(reload).catch((e) => setErr(errorMessage(e))); }}>
+                  <button className="sm" disabled={u.role === 'owner'} onClick={async () => { const p = await ask({ title: `${u.username} 비밀번호 재설정`, label: '새 비밀번호 (8자 이상)', type: 'password' }); if (p) put(`/api/users/${u.id}`, { password: p }).then(reload).catch((e) => setErr(errorMessage(e))); }}>
                     비밀번호 재설정
                   </button>
                 </td>
@@ -304,14 +313,15 @@ function UsersTab() {
       </div>
       <h3 className="mt">사용자 추가</h3>
       <div className="row">
-        <input placeholder="아이디" value={f.username} onChange={(e) => setF({ ...f, username: e.target.value })} />
-        <input placeholder="이름" value={f.displayName} onChange={(e) => setF({ ...f, displayName: e.target.value })} />
-        <input placeholder="비밀번호" type="password" value={f.password} onChange={(e) => setF({ ...f, password: e.target.value })} />
+        <input aria-label="아이디" placeholder="wb홍길동" value={f.username} onChange={(e) => setF({ ...f, username: e.target.value })} />
+        <input placeholder="이름" value={f.displayName} onChange={(e) => setF({ ...f, displayName: e.target.value, username: !f.username || f.username === 'wb' + f.displayName ? 'wb' + e.target.value.trim().normalize('NFC') : f.username })} />
+        <input aria-label="직접 지정할 비밀번호" placeholder="직접 지정 (8자 이상)" type="password" disabled={f.useInitialPassword && !!policy?.initialPasswordConfigured} value={f.password} onChange={(e) => setF({ ...f, password: e.target.value })} />
+        <label className="check"><input type="checkbox" disabled={!policy?.initialPasswordConfigured} checked={f.useInitialPassword && !!policy?.initialPasswordConfigured} onChange={e => setF({ ...f, useInitialPassword: e.target.checked })} />지정 초기값 사용 (첫 로그인 후 변경)</label>
         <select value={f.role} onChange={(e) => setF({ ...f, role: e.target.value })}>
           <option value="teacher">강사</option>
           <option value="admin">관리자</option>
         </select>
-        <button className="primary" onClick={() => post('/api/users', f).then(() => { setF({ username: '', displayName: '', password: '', role: 'teacher' }); reload(); }).catch((e) => setErr(errorMessage(e)))}>
+        <button className="primary" onClick={() => post('/api/users', { ...f, useInitialPassword: f.useInitialPassword && !!policy?.initialPasswordConfigured }).then(() => { setF({ username: '', displayName: '', password: '', role: 'teacher', useInitialPassword: true }); reload(); }).catch((e) => setErr(errorMessage(e)))}>
           추가
         </button>
       </div>
@@ -338,23 +348,24 @@ function SamplesTab({ isAdmin }: { isAdmin: boolean }) {
   );
 }
 
-function AccountTab() {
-  const { user } = useAuth();
+export function AccountTab() {
+  const { user, refresh } = useAuth();
   const [cur, setCur] = useState('');
   const [next, setNext] = useState('');
   const [msg, setMsg] = useState('');
   const [err, setErr] = useState('');
   return (
     <div className="panel">
+      {user?.mustChangePassword && <Alert kind="info">업무를 시작하려면 초기 비밀번호를 변경하세요.</Alert>}
       <p>
-        {user?.displayName} ({user?.username}) · {user?.role === 'admin' ? '관리자' : '강사'}
+        {user?.displayName} ({user?.username}) · {roleLabel(user?.role)}
       </p>
       {err && <Alert kind="danger">{err}</Alert>}
       {msg && <Alert kind="ok">{msg}</Alert>}
       <div className="row">
-        <input type="password" placeholder="현재 비밀번호" value={cur} onChange={(e) => setCur(e.target.value)} />
-        <input type="password" placeholder="새 비밀번호 (8자 이상)" value={next} onChange={(e) => setNext(e.target.value)} />
-        <button className="primary" onClick={() => post('/api/auth/password', { currentPassword: cur, newPassword: next }).then(() => { setMsg('비밀번호를 바꿨습니다.'); setCur(''); setNext(''); }).catch((e) => setErr(errorMessage(e)))}>
+        <input type="password" aria-label="현재 비밀번호" autoComplete="current-password" placeholder="현재 비밀번호" value={cur} onChange={(e) => setCur(e.target.value)} />
+        <input type="password" aria-label="새 비밀번호 (8자 이상)" autoComplete="new-password" placeholder="새 비밀번호 (8자 이상)" value={next} onChange={(e) => setNext(e.target.value)} />
+        <button className="primary" onClick={() => post('/api/auth/password', { currentPassword: cur, newPassword: next }).then(async () => { await refresh(); setMsg('비밀번호를 바꿨습니다.'); setCur(''); setNext(''); }).catch((e) => setErr(errorMessage(e)))}>
           비밀번호 변경
         </button>
       </div>

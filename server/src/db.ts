@@ -67,6 +67,11 @@ export class Store {
         created_at TEXT NOT NULL,
         expires_at TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS api_tokens (
+        id TEXT PRIMARY KEY, user_id TEXT NOT NULL, name TEXT NOT NULL,
+        scope TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL, expires_at TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS audit (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         at TEXT NOT NULL,
@@ -77,6 +82,8 @@ export class Store {
         detail TEXT NOT NULL
       );
     `);
+    const columns = this.db.prepare('PRAGMA table_info(users)').all() as { name: string }[];
+    if (!columns.some(c => c.name === 'must_change_password')) this.db.exec('ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0');
   }
 
   close() {
@@ -155,7 +162,7 @@ export class Store {
   // ── 사용자 ──
 
   listUsers(): User[] {
-    return (this.db.prepare('SELECT id, username, display_name, role, active, created_at FROM users ORDER BY created_at').all() as Array<Record<string, unknown>>).map(rowToUser);
+    return (this.db.prepare('SELECT id, username, display_name, role, active, created_at, must_change_password FROM users ORDER BY created_at').all() as Array<Record<string, unknown>>).map(rowToUser);
   }
 
   getUserByUsername(username: string): UserRow | null {
@@ -174,12 +181,12 @@ export class Store {
       .run(u.id, u.username, u.displayName, u.role, u.passwordHash, u.createdAt);
   }
 
-  updateUser(id: string, patch: { displayName?: string; role?: UserRole; active?: boolean; passwordHash?: string }) {
+  updateUser(id: string, patch: { username?: string; displayName?: string; role?: UserRole; active?: boolean; passwordHash?: string; mustChangePassword?: boolean }) {
     const cur = this.getUser(id);
     if (!cur) throw new NotFoundError();
     this.db
-      .prepare('UPDATE users SET display_name = ?, role = ?, active = ?, password_hash = ? WHERE id = ?')
-      .run(patch.displayName ?? cur.displayName, patch.role ?? cur.role, (patch.active ?? cur.active) ? 1 : 0, patch.passwordHash ?? cur.passwordHash, id);
+      .prepare('UPDATE users SET username = ?, display_name = ?, role = ?, active = ?, password_hash = ?, must_change_password = ? WHERE id = ?')
+      .run(patch.username ?? cur.username, patch.displayName ?? cur.displayName, patch.role ?? cur.role, (patch.active ?? cur.active) ? 1 : 0, patch.passwordHash ?? cur.passwordHash, (patch.mustChangePassword ?? cur.mustChangePassword) ? 1 : 0, id);
   }
 
   // ── 세션 ──
@@ -206,6 +213,7 @@ export class Store {
 
   /** 이 사용자의 로그인 세션을 모두 끊는다 (keepToken 은 남김). 비밀번호 변경·초기화·비활성화 때 쓴다 */
   deleteUserSessions(userId: string, keepToken?: string) {
+    this.db.prepare('DELETE FROM api_tokens WHERE user_id = ?').run(userId);
     if (keepToken) this.db.prepare('DELETE FROM sessions WHERE user_id = ? AND token <> ?').run(userId, keepToken);
     else this.db.prepare('DELETE FROM sessions WHERE user_id = ?').run(userId);
   }
@@ -228,6 +236,7 @@ function rowToUser(r: Record<string, unknown>): User {
     displayName: String(r.display_name),
     role: String(r.role) as UserRole,
     active: Number(r.active) === 1,
+    mustChangePassword: Number(r.must_change_password) === 1,
     createdAt: String(r.created_at),
   };
 }

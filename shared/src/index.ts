@@ -13,3 +13,4 @@ export * from './output.ts';
 export * from './timing.ts';
 export * from './toc.ts';
 export * from './ical.ts';
+export * from './learning-options.ts';

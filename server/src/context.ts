@@ -1,3 +1,4 @@
+import { isManager } from '@wb/shared';
 import type { FastifyRequest } from 'fastify';
 import type { AuditMeta, SessionUser } from '@wb/shared';
 import type { Store } from './db.ts';
@@ -11,6 +12,8 @@ declare module 'fastify' {
   interface FastifyRequest {
     user: SessionUser | null;
     sessionToken: string | null;
+    apiScope: string | null;
+    apiTokenId: string | null;
   }
 }
 
@@ -31,7 +34,7 @@ export function requireUser(req: FastifyRequest): SessionUser {
 
 export function requireAdmin(req: FastifyRequest): SessionUser {
   const u = requireUser(req);
-  if (u.role !== 'admin') throw new HttpError(403, '관리자만 할 수 있는 작업입니다.');
+  if (!isManager(u.role)) throw new HttpError(403, '관리자만 할 수 있는 작업입니다.');
   return u;
 }
 

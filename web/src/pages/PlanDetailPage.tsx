@@ -1,3 +1,4 @@
+import { isManager } from '@wb/shared';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import type { DayView, HolidaySet, LearningObjective, MonthView, OutputTemplate, Plan, PlanSettings, PlanViews, QuarterView, TextbookProgress, User, WeekView, YearView } from '@wb/shared';
@@ -11,7 +12,7 @@ import { SettingsForm } from './PlanCreatePage.tsx';
 
 type PlanDoc = Plan & { blockers: string[]; overbooked: Array<{ date: string; used: number; available: number }> };
 type Tab = 'views' | 'unassigned' | 'edit' | 'records' | 'objectives' | 'history' | 'output';
-type Level = 'year' | 'quarter' | 'month' | 'week' | 'day';
+type Level = 'year' | 'halfyear' | 'quarter' | 'month' | 'week' | 'day';
 
 interface OpPreview {
   diff: ScheduleDiff;
@@ -76,8 +77,10 @@ export function PlanDetailPage() {
           <h1>
             {plan.title} <SampleBadge show={plan.isSample} /> <Badge kind={confirmed ? 'ok' : 'warn'}>{confirmed ? '확정' : '초안'}</Badge> {plan.archived && <Badge>보관</Badge>}
           </h1>
-          <div className="muted small">
-            {plan.subject} · {plan.target || '대상 미지정'} · 계획 v{plan.planVersion} · 과정 {plan.snapshot.curriculumTitle} v{plan.snapshot.curriculumVersion} · 교재 {plan.snapshot.textbooks.map((t) => `${t.title} (${t.edition})`).join(', ')}
+          <div className="plan-detail-meta small">
+            <span>{plan.subject} · {plan.target || '대상 미지정'}</span>
+            <span>과정 {plan.snapshot.curriculumTitle} · 교재 {plan.snapshot.textbooks.map((t) => t.title).join(', ')}</span>
+            <span className="muted">계획 v{plan.planVersion} · 과정 v{plan.snapshot.curriculumVersion} · 판본 {plan.snapshot.textbooks.map((t) => t.edition).join(', ')}</span>
           </div>
         </div>
         <div className="row">
@@ -128,7 +131,7 @@ export function PlanDetailPage() {
       ))}
       {plan.overbooked.length > 0 && <Alert kind="warn">가능시간을 초과한 수업: {plan.overbooked.map((o) => `${o.date} (${o.used}/${o.available}분)`).join(', ')}</Alert>}
 
-      <Tabs<Tab>
+      <div className="plan-detail-tabs"><Tabs<Tab>
         tabs={[
           { key: 'views', label: '통합 진도표' },
           { key: 'unassigned', label: `미배정 (${pending.length})` },
@@ -140,7 +143,7 @@ export function PlanDetailPage() {
         ]}
         value={tab}
         onChange={setTab}
-      />
+      /></div>
 
       {tab === 'views' && <ViewsTab plan={plan} reload={load} />}
       {tab === 'unassigned' && <UnassignedTab plan={plan} runOp={runOp} />}
@@ -191,7 +194,7 @@ export function PlanDetailPage() {
           </div>
         </Modal>
       )}
-      {metaOpen && <MetaModal plan={plan} isAdmin={user?.role === 'admin'} onClose={() => setMetaOpen(false)} onSaved={(p) => { setPlan(p); setMetaOpen(false); }} />}
+      {metaOpen && <MetaModal plan={plan} isAdmin={isManager(user?.role)} onClose={() => setMetaOpen(false)} onSaved={(p) => { setPlan(p); setMetaOpen(false); }} />}
       {settingsOpen && <SettingsModal plan={plan} onClose={() => setSettingsOpen(false)} onPreview={(settings) => { setSettingsOpen(false); runOp('settings', { settings }); }} />}
     </>
   );
@@ -228,16 +231,18 @@ function ViewsTab({ plan, reload }: { plan: PlanDoc; reload: () => void }) {
 
   const Summary = ({ s }: { s: YearView['summary'] }) => (
     <span className="small muted">
-      수업 {s.lessonCount}회{s.cancelledCount + s.holidayCount ? ` · 휴강 ${s.cancelledCount + s.holidayCount}` : ''}{s.makeupCount ? ` · 보강 ${s.makeupCount}` : ''} · 배정 {fmtMinutes(s.assignedMinutes)} (새 학습 {fmtMinutes(s.byActivity.new)}) / 가능 {fmtMinutes(s.availableMinutes)} · 현행 {s.byTrack.current} · 복습보충 {s.byTrack.review} · 선행 {s.byTrack.advance}분
+      수업 {s.lessonCount}회{s.cancelledCount + s.holidayCount ? ` · 휴강 ${s.cancelledCount + s.holidayCount}` : ''}{s.makeupCount ? ` · 보강 ${s.makeupCount}` : ''} · 배정 {fmtMinutes(s.assignedMinutes)} (새 학습 {fmtMinutes(s.byActivity.new)}) / 가능 {fmtMinutes(s.availableMinutes)} · 현행 {fmtMinutes(s.byTrack.current)} · 복습보충 {fmtMinutes(s.byTrack.review)} · 선행 {fmtMinutes(s.byTrack.advance)}
     </span>
   );
 
   return (
     <>
-      <div className="row between mb">
+      <div className="plan-view-toolbar mb">
+        <div className="plan-period-tabs">
         <Tabs<Level>
           tabs={[
             { key: 'year', label: '연간' },
+            { key: 'halfyear', label: '반년' },
             { key: 'quarter', label: '분기' },
             { key: 'month', label: '월간' },
             { key: 'week', label: '주간' },
@@ -246,10 +251,10 @@ function ViewsTab({ plan, reload }: { plan: PlanDoc; reload: () => void }) {
           value={level}
           onChange={setLevel}
         />
-        <div className="small muted">
-          <Summary s={v.summary} /> · 기간 {v.header.period} · {v.header.mode}
         </div>
+        <div className="small muted">기간 {v.header.period} · {v.header.mode}</div>
       </div>
+      <div className="plan-view-summary small"><Summary s={v.summary} /></div>
       <div className="row small mb">
         <span className="muted">경로:</span>
         {sel.year && <button className="sm" onClick={() => { setSel({}); setLevel('year'); }}>{sel.year}학년도 ×</button>}
@@ -258,14 +263,15 @@ function ViewsTab({ plan, reload }: { plan: PlanDoc; reload: () => void }) {
         {sel.week && <button className="sm" onClick={() => { setSel({ ...sel, week: undefined, day: undefined }); setLevel('week'); }}>{weeks.find((w) => w.key === sel.week)?.label} ×</button>}
       </div>
 
-      {level === 'year' && (
+      {(level === 'year' || level === 'halfyear') && (
         <div className="panel">
-          <h2>연간 계획</h2>
+          <h2>{level === 'halfyear' ? '반년 계획 (학년도 기준)' : '연간 계획'}</h2>
+          <p className="muted small">등록된 학습 범위만 집계합니다. 배정이 없는 구간의 학습 내용·목표는 미확정이며, 기간 전체의 계획이 완성됐다는 뜻은 아닙니다.</p>
           <p className="small">
             <strong>교육 목표:</strong> {plan.snapshot.curriculumTitle} · 학년도 시작월 {plan.settings.academicYearStartMonth}월
           </p>
-          {years.map((y) => (
-            <div key={y.academicYear} className="panel tight">
+          {(level === 'halfyear' ? data?.views.halfYears ?? [] : years).map((y) => (
+            <div key={y.from} className="panel tight">
               <div className="row between">
                 <strong>
                   <button className="link" onClick={() => { setSel({ year: y.academicYear }); setLevel('quarter'); }}>
@@ -293,6 +299,7 @@ function ViewsTab({ plan, reload }: { plan: PlanDoc; reload: () => void }) {
                   {plan.snapshot.advance && <div className="small muted">선행: {plan.snapshot.advance.targetDescription} (목표일 {plan.snapshot.advance.targetDate || '미정'})</div>}
                 </div>
               </div>
+              <p className="muted small">집계 월: {y.quarters.flatMap(q => q.months).map(m => m.label).join(', ')}</p>
               <div className="row mt small">
                 {y.quarters.map((q) => (
                   <button key={q.key} className="sm" onClick={() => { setSel({ year: y.academicYear, quarter: q.key }); setLevel('month'); }}>
@@ -410,7 +417,7 @@ function ViewsTab({ plan, reload }: { plan: PlanDoc; reload: () => void }) {
                             {w.summary.makeupCount ? ` 보강 ${w.summary.makeupCount}` : ''}
                           </td>
                           <td className="small">
-                            현행 {w.summary.byTrack.current} · 복습보충 {w.summary.byTrack.review} · 선행 {w.summary.byTrack.advance}
+                            현행 {fmtMinutes(w.summary.byTrack.current)} · 복습보충 {fmtMinutes(w.summary.byTrack.review)} · 선행 {fmtMinutes(w.summary.byTrack.advance)}
                           </td>
                           <td className="small">
                             {w.summary.textbooks.map((t) => (
@@ -1092,7 +1099,7 @@ function SupplementPanel({ plan, onPlan }: { plan: PlanDoc; onPlan: (p: PlanDoc)
               </table>
             </div>
           )}
-          {user?.role === 'admin' ? (
+          {isManager(user?.role) ? (
             <div className="row mt">
               <button className="primary" disabled={busy || uniquePicked.length === 0} onClick={createDraft}>
                 고른 {uniquePicked.length}개 항목으로 보충 과정 초안 만들기
@@ -1186,7 +1193,7 @@ function HistoryTab({ plan, runOp }: { plan: PlanDoc; runOp: (op: string, params
 function OutputTab({ plan, onPlan }: { plan: PlanDoc; onPlan: (p: PlanDoc) => void }) {
   const [audience, setAudience] = useState<'teacher' | 'student'>('teacher');
   const [templateId, setTemplateId] = useState('');
-  const [levels, setLevels] = useState<Level[]>(['year', 'quarter', 'month', 'week', 'day']);
+  const [levels, setLevels] = useState<Level[]>(['year', 'halfyear', 'quarter', 'month', 'week', 'day']);
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
   const { data: templates } = useAsync(() => get<OutputTemplate[]>('/api/templates'), []);
@@ -1217,12 +1224,12 @@ function OutputTab({ plan, onPlan }: { plan: PlanDoc; onPlan: (p: PlanDoc) => vo
         </Field>
         <Field label="포함할 계획표">
           <div className="row">
-            {(['year', 'quarter', 'month', 'week', 'day'] as Level[]).map((l) => (
+            {(['year', 'halfyear', 'quarter', 'month', 'week', 'day'] as Level[]).map((l) => (
               <label key={l} className="check">
-                <input type="checkbox" checked={levels.includes(l)} onChange={() => toggle(l)} /> {{ year: '연간', quarter: '분기', month: '월간', week: '주간', day: '일간' }[l]}
+                <input type="checkbox" checked={levels.includes(l)} onChange={() => toggle(l)} /> {{ year: '연간', halfyear: '반년', quarter: '분기', month: '월간', week: '주간', day: '일간' }[l]}
               </label>
             ))}
-            <button className="sm" onClick={() => setLevels(['year', 'quarter', 'month', 'week', 'day'])}>
+            <button className="sm" onClick={() => setLevels(['year', 'halfyear', 'quarter', 'month', 'week', 'day'])}>
               5종 일괄
             </button>
           </div>
@@ -1412,7 +1419,7 @@ function SettingsModal({ plan, onClose, onPreview }: { plan: PlanDoc; onClose: (
   return (
     <Modal title="편성 설정 변경" onClose={onClose} wide>
       <p className="muted small">변경 후 완료 기록·고정 배정을 제외한 남은 일정을 다시 편성합니다. 적용 전 비교를 보여줍니다.</p>
-      <SettingsForm s={s} onChange={setS} holidaySets={holidaySets ?? []} showAdvanced={adv} setShowAdvanced={setAdv} />
+      <SettingsForm s={s} onChange={setS} holidaySets={holidaySets ?? []} showAdvanced={adv} setShowAdvanced={setAdv} advanceEntryCount={plan.snapshot.sessions.flatMap((session) => session.entries).filter((e) => e.track === 'advance').length} />
       <div className="row mt" style={{ justifyContent: 'flex-end' }}>
         <button onClick={onClose}>취소</button>
         <button className="primary" onClick={() => onPreview(s)}>

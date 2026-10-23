@@ -1,6 +1,7 @@
+import { isManager } from '@wb/shared';
 import type { FastifyInstance } from 'fastify';
 import { randomBytes } from 'node:crypto';
-import type { AppSettings, Curriculum, CurriculumTextbookRef, HolidaySet, ISODate, LearningObjective, OutputTemplate, Plan, PlanSettings, PlanSnapshot, ProgressRecord, SessionUser, Textbook, UnderstandingCheck } from '@wb/shared';
+import type { AppSettings, Curriculum, CurriculumTextbookRef, HolidaySet, ISODate, LearningApproach, LearningObjective, OutputTemplate, Plan, PlanSettings, PlanSnapshot, ProgressRecord, SessionUser, Textbook, UnderstandingCheck } from '@wb/shared';
 import {
   addMakeupDay,
   autoAssemble,
@@ -30,6 +31,9 @@ import {
   swapLessons,
   textbookProgress,
   todayKST,
+  LEARNING_APPROACHES,
+  LEARNING_APPROACH_LABEL,
+  settingsForApproach,
   undoHistory,
   unpinAssignment,
   type OpResult,
@@ -37,6 +41,7 @@ import {
 } from '@wb/shared';
 import type { AppContext } from '../context.ts';
 import { HttpError, TEXT_LIMIT, arr, bool, expectVersion, genId, newMeta, num, requireAdmin, requireUser, safeFileName, str, text, touched } from '../context.ts';
+import { assertCurriculumAssigned } from './curricula.ts';
 
 /** 계획 기간 상한 (약 3년). 기간 우선·목표일·보강일 모두에 적용 */
 const MAX_PLAN_DAYS = 1100;
@@ -47,7 +52,7 @@ import { buildWorkbook, type Level } from '../export.ts';
 // ──────────────────────────────────────────────
 
 export function canAccessPlan(user: SessionUser, plan: Plan): boolean {
-  if (user.role === 'admin') return true;
+  if (isManager(user.role)) return true;
   return plan.createdBy === user.id || plan.allowedUserIds.includes(user.id);
 }
 
@@ -56,13 +61,48 @@ function mustAccess(user: SessionUser, plan: Plan): Plan {
   return plan;
 }
 
+function sourceVersion(curriculum: Curriculum, snapshot: PlanSnapshot): string {
+  return JSON.stringify([curriculum.id, curriculum.version, snapshot.textbooks.map((tb) => [tb.id, tb.textbookVersion])]);
+}
+
+function approachSettings(settings: PlanSettings, approach: LearningApproach): PlanSettings {
+  try { return settingsForApproach(settings, approach); }
+  catch (e) { throw new HttpError(400, (e as Error).message); }
+}
+
 export function buildSnapshot(store: AppContext['store'], curriculum: Curriculum, at: string): PlanSnapshot {
+  assertCurriculumAssigned(curriculum, store);
   // 교재를 고친 뒤 과정이 없어진 항목·교재를 가리키면, 계획이 없는 항목을 배정하게 되므로 만들지 않는다
   const tbs = new Map(curriculum.textbooks.map((ref) => [ref.textbookId, store.get<Textbook>('textbook', ref.textbookId)]));
   const missing = [...curriculum.sessions.flatMap((s) => s.entries), ...curriculum.unassignedEntries]
     .filter((e) => !tbs.get(e.textbookId)?.items.some((i) => i.id === e.itemId))
     .map((e) => `${tbs.get(e.textbookId)?.title ?? e.textbookId}: ${e.itemId}`);
   if (missing.length) throw new HttpError(400, `과정 '${curriculum.title}'이(가) 교재에 없는 학습항목을 가리킵니다. 과정을 열어 배치를 고친 뒤 다시 시도하세요.`, [...new Set(missing)].slice(0, 20));
+  const items = new Map<string, Array<{ tb: Textbook; item: Textbook['items'][number] }>>();
+  for (const tb of store.list<Textbook>('textbook', { includeArchived: true })) {
+    for (const item of tb.items) items.set(item.id, [...(items.get(item.id) ?? []), { tb, item }]);
+  }
+  const pending = curriculum.sessions.flatMap((s) => s.entries.map((e) => {
+    const tb = tbs.get(e.textbookId)!;
+    return { tb, item: tb.items.find((i) => i.id === e.itemId)! };
+  }));
+  const checked = new Set<string>();
+  const invalid: string[] = [];
+  for (let n = 0; n < pending.length; n++) {
+    const source = pending[n];
+    const id = `${source.tb.id}/${source.item.id}`;
+    if (checked.has(id)) continue;
+    checked.add(id);
+    for (const prerequisiteId of source.item.prerequisiteItemIds) {
+      const candidates = items.get(prerequisiteId) ?? [];
+      const prerequisite = candidates[0];
+      const label = prerequisite ? `${prerequisite.tb.title} (${prerequisite.tb.edition || '판본 미입력'}) · ${prerequisite.item.title}` : prerequisiteId;
+      const reason = !prerequisite ? '삭제되었거나 없는 항목' : candidates.length > 1 ? '교재 간 id 중복으로 대상을 구분할 수 없음' : prerequisite.tb.archived ? '보관된 교재' : prerequisite.item.excluded ? '제외된 항목' : !tbs.has(prerequisite.tb.id) ? '선택한 과정의 교재 밖' : '';
+      if (reason) invalid.push(`${source.tb.title} · ${source.item.title} → ${label}: ${reason}`);
+      else pending.push(prerequisite);
+    }
+  }
+  if (invalid.length) throw new HttpError(400, '필요한 선수항목을 계획 스냅샷에 포함할 수 없습니다. 과정의 교재 선택과 선수 연결을 정리한 뒤 다시 시도하세요. 외부 선수를 이미 배운 것으로 처리하지 않습니다.', [...new Set(invalid)].slice(0, 20));
   return {
     curriculumId: curriculum.id,
     curriculumTitle: curriculum.title,
@@ -246,10 +286,17 @@ export function registerPlanRoutes(app: FastifyInstance, ctx: AppContext) {
     if (!curriculum) throw new HttpError(400, '표준과정을 선택하세요.');
     if (curriculum.archived) throw new HttpError(400, '보관된 과정으로는 계획을 만들 수 없습니다.');
     const at = ctx.now();
-    const settings = normalizeSettings(r.settings);
+    let settings = normalizeSettings(r.settings);
     // 학습 범위 선택: 특정 차시 구간 또는 특정 항목만 (중간 지점부터 적용)
     const snapshot = applySelection(buildSnapshot(store, curriculum, at), { fromSessionOrder: num(r.fromSessionOrder, 0), toSessionOrder: num(r.toSessionOrder, 0), includeItemIds: arr<unknown>(r.includeItemIds).filter((x): x is string => typeof x === 'string') });
     if (snapshot.sessions.length === 0) throw new HttpError(400, '선택한 범위에 학습항목이 없습니다.');
+    let learningApproach: LearningApproach | undefined;
+    if (r.learningApproach !== undefined) {
+      if (!LEARNING_APPROACHES.includes(r.learningApproach as LearningApproach)) throw new HttpError(400, '학습안을 올바르게 선택해 주세요.');
+      if (r.expectedSourceVersion !== sourceVersion(curriculum, snapshot)) throw new HttpError(409, '비교 후 교재나 과정이 바뀌었습니다. 3안을 다시 비교한 뒤 저장하세요.');
+      learningApproach = r.learningApproach as LearningApproach;
+      settings = approachSettings(settings, learningApproach);
+    }
     if (snapshot.advance && !r.settings) settings.tracks.currentMinMinutes = snapshot.advance.currentMinMinutes;
 
     const res = generateSchedule(settings, { snapshot, holidayDates: holidayDatesFor(store, settings) });
@@ -259,6 +306,7 @@ export function registerPlanRoutes(app: FastifyInstance, ctx: AppContext) {
       subject: curriculum.subject,
       target: r.target === undefined ? curriculum.target : text(r.target, TEXT_LIMIT.title, '대상'),
       classOrStudentRef: text(r.classOrStudentRef, TEXT_LIMIT.title, '반·학생 표시'),
+      learningApproach,
       curriculumId: curriculum.id,
       snapshot,
       settings,
@@ -270,17 +318,37 @@ export function registerPlanRoutes(app: FastifyInstance, ctx: AppContext) {
       status: 'draft',
       planVersion: 1,
       endDateComputed: res.endDateComputed,
-      history: [{ id: genId(), at, by: user.id, action: 'generate', description: `자동 편성 (${settings.mode === 'period' ? '기간 우선' : '속도 우선'})${res.warnings.length ? ' · ' + res.warnings.join(' ') : ''}` }],
+      history: [{ id: genId(), at, by: user.id, action: 'generate', description: `자동 편성 (${settings.mode === 'period' ? '기간 우선' : '속도 우선'})${learningApproach ? ' · 선택안: ' + LEARNING_APPROACH_LABEL[learningApproach] : ''}${res.warnings.length ? ' · ' + res.warnings.join(' ') : ''}` }],
       author: r.author === undefined ? user.displayName : text(r.author, TEXT_LIMIT.title, '작성자'),
       reviewer: text(r.reviewer, TEXT_LIMIT.title, '검토자'),
       requiredObjectiveIds: arr<unknown>(r.requiredObjectiveIds).filter((x): x is string => typeof x === 'string').slice(0, 500),
       allowedUserIds: arr<unknown>(r.allowedUserIds).filter((x): x is string => typeof x === 'string').slice(0, 200),
-      ...newMeta(user, at, bool(r.isSample, curriculum.isSample)),
+      ...newMeta(user, at, bool(r.isSample, curriculum.isSample) || (!!learningApproach && curriculum.isSample)),
     };
     store.insert('plan', plan);
     store.audit({ at, userId: user.id, kind: 'plan', docId: plan.id, action: 'create', detail: plan.title });
     reply.code(201);
     return { ...planResponse(plan), warnings: res.warnings };
+  });
+
+  /** 같은 학생·학습 범위의 세 가지 시간 배분을 비교하며 저장하지 않는다. */
+  app.post('/api/plans/compare', async (req) => {
+    requireUser(req);
+    const r = (req.body ?? {}) as Record<string, unknown>;
+    const curriculum = store.get<Curriculum>('curriculum', str(r.curriculumId));
+    if (!curriculum) throw new HttpError(400, '표준과정을 선택하세요.');
+    if (curriculum.archived) throw new HttpError(400, '보관된 과정으로는 계획을 만들 수 없습니다.');
+    const base = normalizeSettings(r.settings);
+    const snapshot = applySelection(buildSnapshot(store, curriculum, ctx.now()), { fromSessionOrder: num(r.fromSessionOrder, 0), toSessionOrder: num(r.toSessionOrder, 0), includeItemIds: arr<unknown>(r.includeItemIds).filter((x): x is string => typeof x === 'string') });
+    if (!snapshot.sessions.length) throw new HttpError(400, '선택한 범위에 학습항목이 없습니다.');
+    return {
+      sourceVersion: sourceVersion(curriculum, snapshot),
+      options: LEARNING_APPROACHES.map((learningApproach) => {
+        const settings = approachSettings(base, learningApproach);
+        const res = generateSchedule(settings, { snapshot, holidayDates: holidayDatesFor(store, settings) });
+        return { learningApproach, settings, lessons: res.lessons, assignments: res.assignments, unassigned: res.unassigned, endDateComputed: res.endDateComputed, warnings: res.warnings, shortageMinutes: res.shortageMinutes, snapshot };
+      }),
+    };
   });
 
   /** 편성 미리보기 (저장하지 않음) */
@@ -311,7 +379,7 @@ export function registerPlanRoutes(app: FastifyInstance, ctx: AppContext) {
         author: r.author === undefined ? existing.author : text(r.author, TEXT_LIMIT.title, '작성자'),
         reviewer: r.reviewer === undefined ? existing.reviewer : text(r.reviewer, TEXT_LIMIT.title, '검토자'),
         requiredObjectiveIds: Array.isArray(r.requiredObjectiveIds) ? arr<unknown>(r.requiredObjectiveIds).filter((x): x is string => typeof x === 'string').slice(0, 500) : existing.requiredObjectiveIds,
-        allowedUserIds: user.role === 'admin' && Array.isArray(r.allowedUserIds) ? arr<unknown>(r.allowedUserIds).filter((x): x is string => typeof x === 'string').slice(0, 200) : existing.allowedUserIds,
+        allowedUserIds: isManager(user.role) && Array.isArray(r.allowedUserIds) ? arr<unknown>(r.allowedUserIds).filter((x): x is string => typeof x === 'string').slice(0, 200) : existing.allowedUserIds,
         archived: bool(r.archived, existing.archived),
         lessons: Array.isArray(r.lessonNotes)
           ? existing.lessons.map((l) => {
@@ -604,7 +672,7 @@ export function registerPlanRoutes(app: FastifyInstance, ctx: AppContext) {
     const plan = mustAccess(user, store.mustGet<Plan>('plan', (req.params as { id: string }).id));
     const q = req.query as { from?: string; to?: string };
     const range = q.from && q.to && isISODate(q.from) && isISODate(q.to) ? { from: q.from, to: q.to } : undefined;
-    return { views: buildPlanViews(plan, range), textbookProgress: textbookProgress(plan), items: itemCompletionSummary(plan) };
+    return { id: plan.id, version: plan.version, views: buildPlanViews(plan, range), textbookProgress: textbookProgress(plan), items: itemCompletionSummary(plan) };
   });
 
   app.get('/api/plans/:id/objectives', async (req) => {
@@ -626,7 +694,7 @@ export function registerPlanRoutes(app: FastifyInstance, ctx: AppContext) {
     const user = requireUser(req);
     const plan = mustAccess(user, store.mustGet<Plan>('plan', (req.params as { id: string }).id));
     const q = req.query as { audience?: string; levels?: string; from?: string; to?: string; template?: string };
-    const levels = (q.levels ? q.levels.split(',') : ['year', 'quarter', 'month', 'week', 'day']).filter((l): l is Level => ['year', 'quarter', 'month', 'week', 'day'].includes(l));
+    const levels = (q.levels ? q.levels.split(',') : ['year', 'halfyear', 'quarter', 'month', 'week', 'day']).filter((l): l is Level => ['year', 'halfyear', 'quarter', 'month', 'week', 'day'].includes(l));
     // 출력 양식: 지정되면 양식의 대상(강사/학생)과 열 선택을 따른다
     const template = q.template ? store.get<OutputTemplate>('template', q.template) : null;
     if (q.template && !template) throw new HttpError(400, '출력 양식을 찾을 수 없습니다.');

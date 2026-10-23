@@ -512,7 +512,7 @@ function fill(opts: FillOptions): FillResult {
     reviewBudget += leftover;
     leftover = takeFromQueue('review', lesson, li, reviewBudget, orderRef);
     advanceBudget += leftover;
-    if (advanceAllowedToday || queues.current.length === 0) {
+    if (advanceAllowedToday) {
       leftover = takeFromQueue('advance', lesson, li, advanceBudget, orderRef);
     }
     // 선행이 남긴 시간을 현행이 더 쓸 수 있게 한 번 더

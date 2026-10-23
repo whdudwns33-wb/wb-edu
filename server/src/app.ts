@@ -1,3 +1,7 @@
+import { openapi } from './openapi.ts';
+import { registerExternalSafety } from './routes/external-safety.ts';
+import { authenticateApi, authorizeApi, registerApiTokenRoutes } from './routes/api-tokens.ts';
+import { registerMcpRoute } from './routes/mcp.ts';
 import Fastify, { type FastifyInstance } from 'fastify';
 import fastifyCookie from '@fastify/cookie';
 import fastifyStatic from '@fastify/static';
@@ -24,13 +28,16 @@ export async function buildApp(opts: BuildOptions): Promise<{ app: FastifyInstan
   const ctx: AppContext = { store, now: opts.now ?? (() => new Date().toISOString()) };
   ensureDefaults(ctx);
 
-  const app = Fastify({ logger: opts.logger ?? false, bodyLimit: 10 * 1024 * 1024 });
+  const app = Fastify({ logger: opts.logger ? { redact: ['req.headers.authorization', 'req.headers.cookie', 'res.headers["set-cookie"]'] } : false, bodyLimit: 10 * 1024 * 1024 });
   await app.register(fastifyCookie);
 
   app.decorateRequest('user', null);
   app.decorateRequest('sessionToken', null);
+  app.decorateRequest('apiScope', null);
+  app.decorateRequest('apiTokenId', null);
 
   app.addHook('onRequest', async (req) => {
+    if (authenticateApi(req, ctx)) return;
     const token = req.cookies[SESSION_COOKIE];
     req.sessionToken = token ?? null;
     req.user = null;
@@ -40,8 +47,15 @@ export async function buildApp(opts: BuildOptions): Promise<{ app: FastifyInstan
     }
   });
 
-  app.setErrorHandler((err, _req, reply) => {
+  app.addHook('preHandler', async req => {
+    authorizeApi(req);
+    const path = req.url.split('?')[0];
+    if (req.user?.mustChangePassword && (path.startsWith('/api/') || path === '/mcp') && !['/api/auth/me', '/api/auth/password', '/api/auth/logout'].includes(path)) throw new HttpError(403, '첫 로그인 비밀번호 변경이 필요합니다.');
+  });
+
+  app.setErrorHandler((err, req, reply) => {
     const e = err as Error & { status?: number; statusCode?: number; details?: unknown; validation?: unknown };
+    if (e instanceof HttpError && e.status === 401 && (req.headers.authorization || req.url.split('?')[0] === '/mcp')) reply.header('WWW-Authenticate', 'Bearer realm="WB Planner"');
     if (e instanceof HttpError) return reply.code(e.status).send({ error: e.message, details: e.details });
     if (e instanceof ConflictError) return reply.code(409).send({ error: e.message });
     if (e instanceof NotFoundError) return reply.code(404).send({ error: e.message });
@@ -53,7 +67,11 @@ export async function buildApp(opts: BuildOptions): Promise<{ app: FastifyInstan
   // mode: 화면이 데모 안내(기본 계정 등)를 운영에서 보이지 않게 하는 데 쓴다
   app.get('/api/health', async () => ({ ok: true, time: ctx.now(), mode: process.env.WB_MODE === 'prod' ? 'prod' : 'demo' }));
 
+  app.get('/api/openapi.json', async () => openapi);
+  registerExternalSafety(app, ctx);
   registerUserRoutes(app, ctx);
+  registerApiTokenRoutes(app, ctx);
+  registerMcpRoute(app);
   registerTextbookRoutes(app, ctx);
   registerCurriculumRoutes(app, ctx);
   registerPlanRoutes(app, ctx);

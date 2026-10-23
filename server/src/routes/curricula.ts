@@ -1,12 +1,24 @@
 import type { FastifyInstance } from 'fastify';
 import type { Curriculum, CurriculumSession, CurriculumTextbookRef, SessionEntry, Textbook } from '@wb/shared';
-import { autoAssemble, cloneCurriculum, curriculumTotals, renumber } from '@wb/shared';
+import { autoAssemble, cloneCurriculum, curriculumTotals, curriculumUnassignedMessage, renumber } from '@wb/shared';
 import type { AppContext } from '../context.ts';
 import { HttpError, TEXT_LIMIT, arr, bool, expectVersion, genId, newMeta, num, requireAdmin, requireUser, str, touched } from '../context.ts';
 
 const TRACKS = ['current', 'review', 'advance'];
 const ACTIVITIES = ['new', 'practice', 'review', 'assessment', 'homework'];
 const MODES = ['sequential', 'parallel', 'supplement'];
+
+function normalizeTrack(raw: unknown): SessionEntry['track'] {
+  if (raw === undefined) return 'current';
+  if (!TRACKS.includes(str(raw))) throw new HttpError(400, '트랙은 현행, 복습·보충, 선행 중 하나여야 합니다.');
+  return raw as SessionEntry['track'];
+}
+
+export function assertCurriculumAssigned(c: Curriculum, store: AppContext['store']): void {
+  const textbooks = new Map(c.textbooks.map((ref) => [ref.textbookId, store.mustGet<Textbook>('textbook', ref.textbookId)]));
+  const message = curriculumUnassignedMessage(c, textbooks);
+  if (message) throw new HttpError(400, message);
+}
 
 function normalizeEntry(raw: unknown, textbooks: Map<string, Textbook>, refs: CurriculumTextbookRef[] = []): SessionEntry {
   if (!raw || typeof raw !== 'object') throw new HttpError(400, '차시 배치 항목의 형식이 올바르지 않습니다.');
@@ -39,7 +51,7 @@ function normalizeEntry(raw: unknown, textbooks: Map<string, Textbook>, refs: Cu
     id: str(r.id) || genId(),
     textbookId,
     itemId,
-    track: TRACKS.includes(str(r.track)) ? (str(r.track) as SessionEntry['track']) : 'current',
+    track: normalizeTrack(r.track),
     activity: ACTIVITIES.includes(str(r.activity)) ? (str(r.activity) as SessionEntry['activity']) : 'new',
     minutes,
     portion,
@@ -157,6 +169,7 @@ export function registerCurriculumRoutes(app: FastifyInstance, ctx: AppContext) 
     const body = (req.body ?? {}) as Record<string, unknown>;
     const base = normalizeCurriculum(body, store);
     const doc: Curriculum = { ...base, curriculumVersion: 1, reviewComments: [], ...newMeta(user, at, bool(body.isSample, false)) };
+    if (doc.status === 'verified') assertCurriculumAssigned(doc, store);
     store.insert('curriculum', doc);
     store.audit({ at, userId: user.id, kind: 'curriculum', docId: doc.id, action: 'create', detail: doc.title });
     reply.code(201);
@@ -191,6 +204,7 @@ export function registerCurriculumRoutes(app: FastifyInstance, ctx: AppContext) 
       user,
       ctx.now(),
     );
+    if (doc.status === 'verified') assertCurriculumAssigned(doc, store);
     const saved = store.update('curriculum', doc, version);
     store.audit({ at: doc.updatedAt, userId: user.id, kind: 'curriculum', docId: id, action: 'update', detail: `${doc.title} v${doc.curriculumVersion}` });
     return saved;
@@ -203,6 +217,7 @@ export function registerCurriculumRoutes(app: FastifyInstance, ctx: AppContext) 
     const existing = store.mustGet<Curriculum>('curriculum', id);
     // 발행은 '내가 검토한 내용'을 검증됨으로 표시하는 것이므로, 화면에서 본 버전이 지금 버전과 같아야 한다
     const version = expectVersion(req.body);
+    assertCurriculumAssigned(existing, store);
     const doc = touched({ ...existing, curriculumVersion: existing.curriculumVersion + 1, status: 'verified' as const }, user, ctx.now());
     const saved = store.update('curriculum', doc, version);
     store.audit({ at: doc.updatedAt, userId: user.id, kind: 'curriculum', docId: id, action: 'publish', detail: `v${doc.curriculumVersion}` });
@@ -270,7 +285,7 @@ export function registerCurriculumRoutes(app: FastifyInstance, ctx: AppContext) 
       reviewMinutes: num(body.reviewMinutes, 10),
       bufferMinutes: num(body.bufferMinutes, 5),
       assessmentEvery: num(body.assessmentEvery, 0),
-      track: TRACKS.includes(str(body.track)) ? (str(body.track) as SessionEntry['track']) : 'current',
+      track: normalizeTrack(body.track),
     });
     return { textbooks: refs, sessions: result.sessions, unassignedEntries: result.unassigned };
   });

@@ -200,6 +200,22 @@ export function curriculumTotals(c: Curriculum): { sessions: number; minutes: nu
   };
 }
 
+/** 과정 원천의 미배정은 실행계획으로 넘기기 전에 명시적으로 정리한다. */
+export function curriculumUnassignedMessage(c: Pick<Curriculum, 'unassignedEntries'>, textbooks: Map<string, Textbook>): string | null {
+  if (c.unassignedEntries.length === 0) return null;
+  const titles = c.unassignedEntries.map((e) => {
+    const tb = textbooks.get(e.textbookId);
+    return `${tb?.title ?? e.textbookId} · ${tb?.items.find((it) => it.id === e.itemId)?.title ?? e.itemId}`;
+  });
+  return `과정에 미배정 항목 ${c.unassignedEntries.length}건이 남아 있어 발행하거나 실행계획을 만들 수 없습니다: ${titles.join(', ')}. 과정 조립판에서 실제 차시에 배치하거나 포함·제외 범위를 명시적으로 정리하고 해당 배치를 빼세요. 초안 저장은 가능합니다.`;
+}
+
+/** 선택 교재의 트랙만 바꾸고 배치와 분량은 보존한다. */
+export function setTextbookTrack(c: Curriculum, textbookId: string, track: Track): Curriculum {
+  const update = (e: SessionEntry) => e.textbookId === textbookId ? { ...e, track } : e;
+  return { ...c, sessions: c.sessions.map((s) => ({ ...s, entries: s.entries.map(update) })), unassignedEntries: c.unassignedEntries.map(update) };
+}
+
 /** 차시 번호·제목 재정렬 */
 export function renumber(sessions: CurriculumSession[]): CurriculumSession[] {
   return sessions.map((s, i) => ({ ...s, order: i + 1, title: /^\d+차시$/.test(s.title) || !s.title ? `${i + 1}차시` : s.title }));

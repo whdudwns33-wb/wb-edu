@@ -1,7 +1,8 @@
+import { isManager } from '@wb/shared';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import type { Activity, Curriculum, CurriculumSession, LearningObjective, SessionEntry, Textbook, Track } from '@wb/shared';
-import { ACTIVITY_LABEL, ADVANCE_TYPE_LABEL, COMPOSITION_LABEL, TRACK_LABEL, curriculumTotals, fmtMinutes, formatKST, mergeEntries, moveEntry, rangeLabel, renumber, sessionMinutes, splitEntry } from '@wb/shared';
+import { ACTIVITY_LABEL, ADVANCE_TYPE_LABEL, COMPOSITION_LABEL, TRACK_LABEL, curriculumTotals, curriculumUnassignedMessage, fmtMinutes, formatKST, mergeEntries, moveEntry, rangeLabel, renumber, sessionMinutes, setTextbookTrack, splitEntry } from '@wb/shared';
 import { get, post, put, errorMessage } from '../api.ts';
 import { RemoteChangeBanner, useRemoteVersion } from '../components/RemoteChange.tsx';
 import { useAuth } from '../auth.tsx';
@@ -21,7 +22,7 @@ export function CurriculaPage() {
         <h1>표준과정 보관함</h1>
         <div className="row">
           <input aria-label="표준과정 검색" placeholder="검색 (과정명·대상)" value={q} onChange={(e) => setQ(e.target.value)} />
-          {user?.role === 'admin' && (
+          {isManager(user?.role) && (
             <Link className="btn primary" to="/curricula/new">
               + 과정 만들기
             </Link>
@@ -35,7 +36,7 @@ export function CurriculaPage() {
           <Loading />
         ) : rows.length === 0 ? (
           <Empty>
-            {q ? <>검색 조건에 맞는 표준과정이 없습니다. <button onClick={() => setQ('')}>검색 지우기</button></> : user?.role === 'admin' ? '표준과정이 없습니다. 교재를 등록한 뒤 과정 만들기로 진행하세요.' : '등록된 표준과정이 없습니다. 관리자에게 과정 등록을 요청하세요.'}
+            {q ? <>검색 조건에 맞는 표준과정이 없습니다. <button onClick={() => setQ('')}>검색 지우기</button></> : isManager(user?.role) ? '표준과정이 없습니다. 교재를 등록한 뒤 과정 만들기로 진행하세요.' : '등록된 표준과정이 없습니다. 관리자에게 과정 등록을 요청하세요.'}
           </Empty>
         ) : (
           <div className="table-wrap">
@@ -89,11 +90,14 @@ export function CurriculumEditorPage() {
   const nav = useNavigate();
   const { user } = useAuth();
   const isNew = id === 'new';
-  const readOnly = user?.role !== 'admin';
+  const readOnly = !isManager(user?.role);
   const [doc, setDoc] = useState<Curriculum | null>(isNew ? blankCurriculum() : null);
   const [error, setError] = useState('');
   const [msg, setMsg] = useState('');
   const [busy, setBusy] = useState(false);
+  const [defaultTrack, setDefaultTrack] = useState<Track>('current');
+  const [bulkTextbookId, setBulkTextbookId] = useState('');
+  const [bulkTrack, setBulkTrack] = useState<Track>('current');
   const [selected, setSelected] = useState<string | null>(null);
   const [mergeWith, setMergeWith] = useState<string | null>(null);
   const [dragId, setDragId] = useState<string | null>(null);
@@ -104,7 +108,7 @@ export function CurriculumEditorPage() {
   useEffect(() => () => touchCleanup.current?.(), []);
   const [splitTarget, setSplitTarget] = useState<SessionEntry | null>(null);
   const [comment, setComment] = useState('');
-  const { data: textbooks } = useAsync(() => get<Textbook[]>('/api/textbooks'), []);
+  const { data: textbooks } = useAsync(() => get<Textbook[]>('/api/textbooks?archived=1'), []);
   const { data: objectives } = useAsync(() => get<LearningObjective[]>('/api/objectives'), []);
   const [baseline, setBaseline] = useState('');
   const loaded = (c: Curriculum) => {
@@ -134,6 +138,10 @@ export function CurriculumEditorPage() {
   const set = (patch: Partial<Curriculum>) => setDoc({ ...doc, ...patch });
   const totals = curriculumTotals(doc);
   const budget = doc.recommendedMinutesPerSession - doc.reviewMinutesPerSession - doc.bufferMinutesPerSession;
+  const unassignedMessage = curriculumUnassignedMessage(doc, tbMap);
+  const bulkSessionCount = doc.sessions.flatMap((s) => s.entries).filter((e) => e.textbookId === bulkTextbookId).length;
+  const bulkUnassignedCount = doc.unassignedEntries.filter((e) => e.textbookId === bulkTextbookId).length;
+  const advanceCount = [...doc.sessions.flatMap((s) => s.entries), ...doc.unassignedEntries].filter((e) => e.track === 'advance').length;
 
   const save = async () => {
     setBusy(true);
@@ -162,6 +170,7 @@ export function CurriculumEditorPage() {
         reviewMinutes: doc.reviewMinutesPerSession,
         bufferMinutes: doc.bufferMinutesPerSession,
         assessmentEvery: doc.assessmentEvery,
+        track: defaultTrack,
       });
       set({ sessions: r.sessions, unassignedEntries: r.unassignedEntries, status: 'draft' });
       setMsg(`자동 구성: ${r.sessions.length}차시, 미배정 ${r.unassignedEntries.length}건. 자동 초안이며 검증된 과정으로 표시되지 않습니다.`);
@@ -392,7 +401,7 @@ export function CurriculumEditorPage() {
                 복제
               </button>
               <button
-                disabled={JSON.stringify(doc) !== baseline}
+                disabled={busy || JSON.stringify(doc) !== baseline || !!unassignedMessage}
                 onClick={async () => {
                   // 화면에서 본 버전을 함께 보내, 그사이 다른 관리자가 바꾼 내용을 확인 없이 '검증됨'으로 발행하지 않게 한다
                   try {
@@ -401,7 +410,7 @@ export function CurriculumEditorPage() {
                     setError(errorMessage(e));
                   }
                 }}
-                title={JSON.stringify(doc) !== baseline ? '고친 내용을 먼저 저장하세요' : '검증 완료로 표시하고 과정 버전을 올립니다'}
+                title={unassignedMessage ?? (JSON.stringify(doc) !== baseline ? '고친 내용을 먼저 저장하세요' : '검증 완료로 표시하고 과정 버전을 올립니다')}
               >
                 검증 완료·새 버전 발행
               </button>
@@ -417,6 +426,7 @@ export function CurriculumEditorPage() {
       {error && <Alert kind="danger">{error}</Alert>}
       <RemoteChangeBanner remote={remote} localVersion={doc.version} dirty={!!baseline && JSON.stringify(doc) !== baseline} onReload={reloadLatest} />
       {msg && <Alert kind="ok">{msg}</Alert>}
+      {unassignedMessage && <Alert kind="warn">{unassignedMessage}</Alert>}
       {readOnly && <Alert kind="info">표준과정은 관리자만 수정할 수 있습니다. 검토 의견은 남길 수 있습니다.</Alert>}
 
       <div className="panel">
@@ -459,7 +469,7 @@ export function CurriculumEditorPage() {
             <select value={doc.status} onChange={(e) => set({ status: e.target.value as Curriculum['status'] })} disabled={readOnly}>
               <option value="draft">초안</option>
               <option value="reviewing">검토 중</option>
-              <option value="verified">검증됨</option>
+              <option value="verified" disabled={!!unassignedMessage}>검증됨</option>
             </select>
           </Field>
           <Field label="출처">
@@ -491,7 +501,7 @@ export function CurriculumEditorPage() {
               }}
             >
               <option value="">+ 교재 추가…</option>
-              {(textbooks ?? []).map((t) => (
+              {(textbooks ?? []).filter((t) => !t.archived).map((t) => (
                 <option key={t.id} value={t.id}>
                   {t.title} ({t.edition})
                 </option>
@@ -572,6 +582,11 @@ export function CurriculumEditorPage() {
           </h2>
           {!readOnly && (
             <div className="row">
+              <Field label="생성할 기본 트랙">
+                <select value={defaultTrack} onChange={(e) => setDefaultTrack(e.target.value as Track)}>
+                  {Object.entries(TRACK_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                </select>
+              </Field>
               <button onClick={autoAssemble} disabled={busy || doc.textbooks.length === 0} title="구성 방식에 따라 차시를 자동으로 만듭니다 (기존 배치를 바꿉니다)">
                 자동 구성
               </button>
@@ -579,6 +594,30 @@ export function CurriculumEditorPage() {
             </div>
           )}
         </div>
+        <p className="muted small">기본값은 현행입니다. 보충형은 주교재와 보충 교재를 연결하는 조합 방식이며 복습·보충 트랙과 다릅니다. 트랙 선택이나 수업시간·선행 설정만 바꾸면 기존 항목의 트랙은 유지됩니다. 자동 구성을 실행할 때 선택한 기본 트랙으로 새 배치를 만듭니다.</p>
+        {!readOnly && (
+          <div className="panel tight">
+            <h3>교재별 트랙 일괄 지정</h3>
+            <div className="row">
+              <Field label="대상 교재">
+                <select value={bulkTextbookId} onChange={(e) => setBulkTextbookId(e.target.value)}>
+                  <option value="">교재 선택…</option>
+                  {doc.textbooks.map((ref) => <option key={ref.textbookId} value={ref.textbookId}>{tbMap.get(ref.textbookId)?.title ?? ref.textbookId} ({ref.edition})</option>)}
+                </select>
+              </Field>
+              <Field label="지정할 트랙">
+                <select value={bulkTrack} onChange={(e) => setBulkTrack(e.target.value as Track)}>
+                  {Object.entries(TRACK_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                </select>
+              </Field>
+              <span className="small">적용 대상: 차시 {bulkSessionCount}건 · 미배정 {bulkUnassignedCount}건 · 합계 {bulkSessionCount + bulkUnassignedCount}건</span>
+              <button disabled={busy || !bulkTextbookId || bulkSessionCount + bulkUnassignedCount === 0} onClick={() => {
+                setDoc(setTextbookTrack(doc, bulkTextbookId, bulkTrack));
+                setMsg(`${tbMap.get(bulkTextbookId)?.title ?? bulkTextbookId}의 ${bulkSessionCount + bulkUnassignedCount}건을 ${TRACK_LABEL[bulkTrack]} 트랙으로 지정했습니다. 저장하면 반영됩니다.`);
+              }}>트랙만 적용</button>
+            </div>
+          </div>
+        )}
         {sel && !readOnly && (
           <div className="panel tight" style={{ background: 'var(--primary-soft)' }}>
             <div className="row">
@@ -791,6 +830,7 @@ export function CurriculumEditorPage() {
 
       <div className="panel">
         <h2>선행 과정 설정 (선택)</h2>
+        {doc.advance && advanceCount === 0 && <Alert kind="warn">선행 설정이 있지만 선행 트랙 항목은 0건입니다. 자동 구성의 기본 트랙이나 교재별 트랙 일괄 지정에서 실제 선행 항목을 지정하세요.</Alert>}
         {!doc.advance ? (
           !readOnly && <button onClick={() => set({ advance: { type: 'next_semester', currentGrade: '', actualStage: '', targetDescription: '', targetDate: '', currentMinMinutes: 0, requiredObjectiveIds: [], prerequisitesConfirmed: false } })}>선행 설정 추가</button>
         ) : (

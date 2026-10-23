@@ -1,7 +1,7 @@
 ﻿<#
 .SYNOPSIS
   WB 커리큘럼 플래너를 Windows 작업 스케줄러에 등록한다 (학원 PC 한 대 구성).
-  - "WB Planner Server": 로그온 시 창 없이 자동 시작, 실패하면 1분 뒤 재시작(최대 3회).
+  - "WB Planner Server": 로그인 없이 부팅 시 시작, 종료 후 1분 간격 재실행.
                          기록은 server\data\logs\server-YYYY-MM.log
   - "WB Planner Backup": 매일 지정 시각에 운영 DB 백업 (npm run backup:prod 와 같은 동작, .env.prod 의 백업 폴더 사용)
   - 바탕화면 바로가기 "WB 커리큘럼 플래너" (브라우저로 앱 열기)
@@ -54,13 +54,8 @@ if ($m) { $port = [int]$m.Matches[0].Groups[1].Value }
 
 $user = "$env:USERDOMAIN\$env:USERNAME"
 
-# 서버: 로그온 시 창 없이 시작 (창을 실수로 닫아 서버가 꺼지지 않게). 기록은 파일로.
-$startCmd = "& '$node' 'scripts\start-prod.mjs' --log-file"
-$serverAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -WindowStyle Hidden -Command `"$startCmd`"" -WorkingDirectory $root
-$serverTrigger = New-ScheduledTaskTrigger -AtLogOn -User $user
-$serverSettings = New-ScheduledTaskSettingsSet -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit (New-TimeSpan -Days 3650) -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
-Register-ScheduledTask -TaskName $serverTask -Action $serverAction -Trigger $serverTrigger -Settings $serverSettings -User $user -Force | Out-Null
-Write-Host "등록: $serverTask (로그온 시 자동 시작, 기록: server\data\logs)"
+# 서버 작업만 따로 복구할 수 있도록 등록을 분리한다.
+& (Join-Path $PSScriptRoot 'register-server.ps1')
 
 # 백업: 매일 지정 시각 (.env.prod 를 읽는 backup-prod.mjs)
 $backupAction = New-ScheduledTaskAction -Execute $node -Argument '"scripts\backup-prod.mjs"' -WorkingDirectory $root

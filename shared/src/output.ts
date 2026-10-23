@@ -2,7 +2,7 @@
  * 출력 양식 열 정의. 엑셀(서버)과 A4 인쇄(웹)가 같은 정의를 사용해
  * 양식별로 선택한 열이 두 출력물에 동일하게 적용된다.
  */
-import type { AssignmentView, DayView, QuarterView, WeekView, YearView } from './views.ts';
+import type { AssignmentView, DayView, QuarterView, HalfYearView, WeekView, YearView } from './views.ts';
 import { fmtMinutes } from './units.ts';
 import type { OutputTemplate } from './types.ts';
 
@@ -116,7 +116,7 @@ export function extraLabelMap(subjectFields: Array<{ fields: Array<{ key: string
 // 연간·분기·월간 표 열 (월간 표의 한 행은 그 달의 한 주)
 // ──────────────────────────────────────────────
 
-export type SummaryLevel = 'year' | 'quarter' | 'month';
+export type SummaryLevel = 'year' | 'halfyear' | 'quarter' | 'month';
 
 export interface SummaryColumnDef<Row> {
   key: string;
@@ -148,6 +148,8 @@ export const YEAR_COLUMNS: SummaryColumnDef<YearView>[] = [
   { key: 'targets', label: '현행·복습·선행 도달 목표', value: (y) => y.trackTargets.filter((t) => t.minutes > 0).map((t) => `${t.label} ${t.itemCount}항목 ${fmtMinutes(t.minutes)}`).join(', ') },
 ];
 
+export const HALFYEAR_COLUMNS: SummaryColumnDef<HalfYearView>[] = YEAR_COLUMNS.map(c => c.key === 'label' ? { key: 'label', label: '반년 (학년도 기준)', value: y => y.label } : c);
+
 export const QUARTER_COLUMNS: SummaryColumnDef<QuarterView>[] = [
   { key: 'label', label: '분기 (학년도 기준)', value: (q) => q.label },
   { key: 'period', label: '기간', value: (q) => `${q.from} ~ ${q.to}` },
@@ -171,16 +173,18 @@ export const MONTH_COLUMNS: SummaryColumnDef<WeekView>[] = [
   { key: 'textbooks', label: '주별 진도 (교재별 범위)', value: (w, c) => w.summary.textbooks.map((t) => `${c.clean(t.title)}: ${t.rangeText}`).join(' / ') },
 ];
 
-const SUMMARY_DEFS = { year: YEAR_COLUMNS, quarter: QUARTER_COLUMNS, month: MONTH_COLUMNS } as const;
+const SUMMARY_DEFS = { year: YEAR_COLUMNS, halfyear: HALFYEAR_COLUMNS, quarter: QUARTER_COLUMNS, month: MONTH_COLUMNS } as const;
 
 export const DEFAULT_SUMMARY_COLUMNS: Record<'teacher' | 'student', Record<SummaryLevel, string[]>> = {
   teacher: {
     year: ['label', 'period', 'lessons', 'totalMinutes', 'assigned', 'tracks', 'flow', 'targets'],
+    halfyear: ['label', 'period', 'lessons', 'totalMinutes', 'assigned', 'tracks', 'flow', 'targets'],
     quarter: ['label', 'period', 'lessons', 'offMakeup', 'assigned', 'textbooks', 'reviewAssess', 'transitions'],
     month: ['week', 'days', 'lessons', 'available', 'assigned', 'offMakeup', 'tracks', 'textbooks'],
   },
   student: {
     year: ['label', 'period', 'lessons', 'flow', 'targets'],
+    halfyear: ['label', 'period', 'lessons', 'flow', 'targets'],
     quarter: ['label', 'period', 'lessons', 'offMakeup', 'textbooks', 'reviewAssess'],
     month: ['week', 'days', 'offMakeup', 'textbooks'],
   },
@@ -215,7 +219,7 @@ export function resolveSummaryColumns<L extends SummaryLevel>(
 export function cleanSummaryColumns(raw: unknown): OutputTemplate['summaryColumns'] {
   if (!raw || typeof raw !== 'object') return undefined;
   const out: NonNullable<OutputTemplate['summaryColumns']> = {};
-  for (const level of ['year', 'quarter', 'month'] as SummaryLevel[]) {
+  for (const level of ['year', 'halfyear', 'quarter', 'month'] as SummaryLevel[]) {
     const v = (raw as Record<string, unknown>)[level];
     if (!Array.isArray(v)) continue;
     const valid = new Set(summaryColumnKeys(level));

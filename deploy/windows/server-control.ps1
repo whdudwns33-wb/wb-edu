@@ -5,7 +5,7 @@
   남은 서버가 포트를 계속 쥐고 있으면 새 서버가 뜨지 못하므로, 이 스크립트로 서버 프로세스까지 정리한다.
 
 .USAGE
-  저장소 루트에서 (관리자 권한 필요 없음):
+  저장소 루트에서 (SYSTEM 작업이면 관리자 PowerShell 사용):
     powershell -ExecutionPolicy Bypass -File deploy\windows\server-control.ps1 restart
     powershell -ExecutionPolicy Bypass -File deploy\windows\server-control.ps1 stop
     powershell -ExecutionPolicy Bypass -File deploy\windows\server-control.ps1 start
@@ -25,12 +25,13 @@ function Get-ServerProcesses {
   # 같은 서버 파일을 쓰는 개발용 데모 서버(3988)는 건드리지 않는다.
   $all = @(Get-CimInstance Win32_Process -Filter "Name='node.exe'")
   $pick = @{}
-  foreach ($p in $all) { if ($p.CommandLine -like '*scripts\start-prod.mjs*') { $pick[$p.ProcessId] = $p } }
+  foreach ($p in $all) { if ($p.CommandLine -like '*scripts\start-prod.mjs*' -and $p.CommandLine.IndexOf($root.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase) -ge 0) { $pick[$p.ProcessId] = $p } }
   $port = Get-Port
   $listener = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
   if ($listener) {
     $cur = $all | Where-Object { $_.ProcessId -eq $listener.OwningProcess }
-    while ($cur) {
+    if (-not $cur -or (-not $cur.CommandLine -or $cur.CommandLine.IndexOf($root.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase) -lt 0)) { throw '운영 포트를 쓰는 프로세스의 소속을 확인할 수 없습니다. 관리자 권한과 다른 앱의 포트 사용을 확인하세요. 다른 앱은 종료하지 않았습니다.' }
+    while ($cur -and $cur.CommandLine -and ($cur.CommandLine.IndexOf($root.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase) -ge 0 -or $cur.CommandLine -match '[" ]scripts\\start-prod\.mjs')) {
       $pick[$cur.ProcessId] = $cur
       $parentId = $cur.ParentProcessId
       $cur = $all | Where-Object { $_.ProcessId -eq $parentId }
@@ -57,7 +58,10 @@ function Get-Port {
 }
 
 function Stop-Server {
-  if (Get-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue) { Stop-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue }
+  if (Get-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue) {
+    Disable-ScheduledTask -TaskName $task | Out-Null
+    Stop-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue
+  }
   $procs = @(Get-ServerProcesses)
   foreach ($p in $procs) { Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue }
   Start-Sleep -Seconds 1
@@ -67,6 +71,7 @@ function Stop-Server {
 }
 
 function Start-Server {
+  Enable-ScheduledTask -TaskName $task | Out-Null
   if (@(Get-ServerProcesses).Count) { Write-Host '이미 서버가 실행 중입니다. 다시 시작하려면 restart 를 쓰세요.'; return }
   Start-ScheduledTask -TaskName $task
   $port = Get-Port

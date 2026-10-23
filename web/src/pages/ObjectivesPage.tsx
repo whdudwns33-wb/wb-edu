@@ -1,3 +1,4 @@
+import { isManager } from '@wb/shared';
 import { useState } from 'react';
 import type { LearningObjective } from '@wb/shared';
 import { OBJECTIVE_STATE_LABEL, type ObjectiveStatus } from '@wb/shared';
@@ -14,7 +15,7 @@ interface PlanRow {
 
 export function ObjectivesPage() {
   const { user } = useAuth();
-  const isAdmin = user?.role === 'admin';
+  const isAdmin = isManager(user?.role);
   const { data: objectives, loading, error, reload } = useAsync(() => get<LearningObjective[]>('/api/objectives'), []);
   const { data: plans } = useAsync(() => get<PlanRow[]>('/api/plans'), []);
   const [editing, setEditing] = useState<LearningObjective | null>(null);
