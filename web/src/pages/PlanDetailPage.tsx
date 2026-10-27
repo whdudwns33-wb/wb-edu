@@ -1230,7 +1230,7 @@ function OutputTab({ plan, onPlan }: { plan: PlanDoc; onPlan: (p: PlanDoc) => vo
               </label>
             ))}
             <button className="sm" onClick={() => setLevels(['year', 'halfyear', 'quarter', 'month', 'week', 'day'])}>
-              5종 일괄
+              6종 일괄
             </button>
           </div>
         </Field>

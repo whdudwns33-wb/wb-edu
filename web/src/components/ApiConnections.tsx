@@ -1,10 +1,12 @@
 import { useState } from 'react';
 import { get, post, del, errorMessage } from '../api.ts';
 import { Alert, Field, Loading, useAsync, usePrompt } from './ui.tsx';
-import { formatKST } from '@wb/shared';
+import { useAuth } from '../auth.tsx';
+import { isManager, formatKST } from '@wb/shared';
 
 type ApiToken = { id: string; name: string; scope: string; expiresAt: string };
 export function ApiConnections() {
+  const { user } = useAuth();
   const { data, loading, reload } = useAsync(() => get<ApiToken[]>('/api/api-tokens'), []);
   const [name, setName] = useState(''), [scope, setScope] = useState('read');
   const [days, setDays] = useState(90), [token, setToken] = useState('');
@@ -24,10 +26,10 @@ export function ApiConnections() {
     {token && <div role="status"><Alert kind="ok">키는 지금 한 번만 표시됩니다. 안전한 비밀 저장소에 보관하세요.</Alert><Field label="발급한 API 키"><input readOnly type="password" value={token} aria-label="발급한 API 키" /></Field><button onClick={async () => { try { await navigator.clipboard.writeText(token); } catch { setErr('키 복사에 실패했습니다. 입력란에서 직접 복사하세요.'); } }}>키 복사</button><button onClick={() => setToken('')}>키 표시 닫기</button></div>}
     <div className="row">
       <Field label="연결 이름"><input value={name} maxLength={80} onChange={e => setName(e.target.value)} placeholder="예: 김정현 PC" /></Field>
-      <Field label="허용 작업"><select value={scope} onChange={e => setScope(e.target.value)}><option value="read">조회 전용</option><option value="write">조회·등록·수정·진도 기록</option></select></Field>
+      <Field label="허용 작업"><select value={scope} onChange={e => setScope(e.target.value)}><option value="read">조회 전용</option><option value="write">조회·등록·수정·진도 기록</option>{isManager(user?.role) && <option value="manage">전체 업무·사용자·휴일·설정 관리</option>}</select></Field>
       <Field label="유효기간 (일)"><input type="number" min={1} max={365} value={days} onChange={e => setDays(Number(e.target.value))} /></Field>
       <button className="primary" disabled={busy || !name.trim()} onClick={create}>{busy ? '발급 중…' : '키 발급'}</button>
     </div>
-    {loading ? <Loading /> : data?.length ? <div className="table-wrap"><table><thead><tr><th>연결 이름</th><th>허용 작업</th><th>만료</th><th>관리</th></tr></thead><tbody>{data.map(item => <tr key={item.id}><td>{item.name}</td><td>{item.scope === 'write' ? '조회·등록·수정' : '조회 전용'}</td><td>{formatKST(item.expiresAt)}</td><td><button className="danger sm" onClick={async () => { if (!await ask({ title: '연결 키 폐기', label: item.name + ' 연결은 즉시 사용할 수 없게 됩니다.', type: 'confirm', okLabel: '폐기' })) return; try { await del('/api/api-tokens/' + item.id); setToken(''); reload(); } catch (e) { setErr(errorMessage(e)); } }}>폐기</button></td></tr>)}</tbody></table></div> : <p className="muted">등록된 외부 연결이 없습니다.</p>}
+    {loading ? <Loading /> : data?.length ? <div className="table-wrap"><table><thead><tr><th>연결 이름</th><th>허용 작업</th><th>만료</th><th>관리</th></tr></thead><tbody>{data.map(item => <tr key={item.id}><td>{item.name}</td><td>{item.scope === 'manage' ? '전체 업무·운영 관리' : item.scope === 'write' ? '조회·등록·수정' : '조회 전용'}</td><td>{formatKST(item.expiresAt)}</td><td><button className="danger sm" onClick={async () => { if (!await ask({ title: '연결 키 폐기', label: item.name + ' 연결은 즉시 사용할 수 없게 됩니다.', type: 'confirm', okLabel: '폐기' })) return; try { await del('/api/api-tokens/' + item.id); setToken(''); reload(); } catch (e) { setErr(errorMessage(e)); } }}>폐기</button></td></tr>)}</tbody></table></div> : <p className="muted">등록된 외부 연결이 없습니다.</p>}
   </section>;
 }

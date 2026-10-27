@@ -60,7 +60,7 @@ it('실제 SDK 원격 클라이언트가 초기화·도구 조회·호출·종�
  await client.connect(new StreamableHTTPClientTransport(new URL(origin + '/mcp'), { requestInit: { headers: { authorization: 'Bearer ' + key.token } } }));
  try {
   const list = await client.listTools();
-  expect(list.tools).toHaveLength(17);
+  expect(list.tools).toHaveLength(32);
   const read = await client.callTool({ name: 'list_textbooks', arguments: {} });
   expect(read.isError).toBe(false);
   const write = await client.callTool({ name: 'create_textbooks', arguments: { data: { title: '[가상] 차단' }, requestId: randomUUID(), confirm: true } });

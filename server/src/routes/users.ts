@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { isManager, normalizeUsername, validUsername } from '@wb/shared';
 import type { SessionUser, UserRole } from '@wb/shared';
@@ -42,6 +43,8 @@ function parseRole(value: unknown): UserRole {
 
 export function registerUserRoutes(app: FastifyInstance, ctx: AppContext) {
   const { store } = ctx;
+  const revision = (id: string) => createHash('sha256').update(JSON.stringify(store.getUser(id))).digest('hex');
+  const publicUser = (id: string, external: boolean) => { const user = store.listUsers().find(u => u.id === id); return user && external ? { ...user, revision: revision(id) } : user; };
 
   app.post('/api/auth/login', async (req, reply) => {
     const r = (req.body ?? {}) as Record<string, unknown>;
@@ -109,12 +112,13 @@ export function registerUserRoutes(app: FastifyInstance, ctx: AppContext) {
 
   app.get('/api/users', async (req) => {
     requireAdmin(req);
-    return store.listUsers();
+    return req.apiScope ? store.listUsers().map(u => publicUser(u.id, true)) : store.listUsers();
   });
 
   app.post('/api/users', async (req, reply) => {
     const me = requireAdmin(req);
     const r = (req.body ?? {}) as Record<string, unknown>;
+    if (req.apiScope && r.password !== undefined) throw new HttpError(400, '외부 계정 발급은 useInitialPassword:true를 사용하세요. 비밀번호를 요청에 넣지 마세요.');
     const username = normalizeUsername(str(r.username));
     const password = issuedPassword(r);
     if (!validUsername(username)) throw new HttpError(400, '아이디는 wb+한글 이름 또는 기존 영문·숫자 3~32자 형식이어야 합니다.');
@@ -127,13 +131,15 @@ export function registerUserRoutes(app: FastifyInstance, ctx: AppContext) {
     store.updateUser(id, { mustChangePassword: true });
     store.audit({ at: ctx.now(), userId: me.id, kind: 'user', docId: id, action: 'user_create', detail: `${username} (${role})` });
     reply.code(201);
-    return store.listUsers().find((u) => u.id === id);
+    return publicUser(id, !!req.apiScope);
   });
 
   app.put('/api/users/:id', async (req) => {
     const me = requireAdmin(req);
     const id = (req.params as { id: string }).id;
     const r = (req.body ?? {}) as Record<string, unknown>;
+    if (req.apiScope && r.password !== undefined) throw new HttpError(400, '외부 비밀번호 재설정은 useInitialPassword:true를 사용하세요.');
+    if (req.apiScope && (typeof r.expectRevision !== 'string' || r.expectRevision !== revision(id))) throw new HttpError(409, '사용자 상태가 변경되었습니다. 목록을 다시 조회하고 expectRevision을 확인하세요.');
     const patch: { username?: string; displayName?: string; role?: UserRole; active?: boolean; passwordHash?: string; mustChangePassword?: boolean } = {};
     if (r.username !== undefined) {
       const username = normalizeUsername(str(r.username));
@@ -165,6 +171,6 @@ export function registerUserRoutes(app: FastifyInstance, ctx: AppContext) {
       patch.displayName !== undefined && patch.displayName !== before.displayName ? '이름 변경' : '',
     ].filter(Boolean);
     if (changes.length) store.audit({ at: ctx.now(), userId: me.id, kind: 'user', docId: id, action: 'user_update', detail: `${before.username}: ${changes.join(', ')}` });
-    return store.listUsers().find((u) => u.id === id);
+    return publicUser(id, !!req.apiScope);
   });
 }

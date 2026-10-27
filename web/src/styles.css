@@ -160,7 +160,7 @@ table input[type='checkbox'] { min-width: 0; width: 16px; }
 
 /* 탭 */
 .tabs { display: flex; gap: 2px; border-bottom: 2px solid var(--line); margin-bottom: 14px; overflow-x: auto; }
-.tabs button { border: none; background: none; border-radius: 0; padding: 8px 12px; color: var(--muted); border-bottom: 2px solid transparent; margin-bottom: -2px; }
+.tabs button { flex-shrink: 0; border: none; background: none; border-radius: 0; padding: 8px 12px; color: var(--muted); border-bottom: 2px solid transparent; margin-bottom: -2px; }
 .tabs button.active { color: var(--primary); border-bottom-color: var(--primary); font-weight: 600; }
 .tabs button:focus-visible { outline-offset: -3px; }
 

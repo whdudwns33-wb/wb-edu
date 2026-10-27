@@ -1,3 +1,4 @@
+import { isManager } from '@wb/shared';
 import { createHash } from 'node:crypto';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { HttpError, requireUser, text, genId, type AppContext } from '../context.ts';
@@ -23,11 +24,17 @@ export function authorizeApi(req: FastifyRequest) {
   if (!req.apiScope) return;
   const path = req.url.split('?')[0];
   if (req.method === 'GET' && ['/api/health', '/api/openapi.json'].includes(path)) return;
+  const management = /^\/api\/(users(?:\/[A-Za-z0-9_-]+)?|holiday-sets(?:\/[A-Za-z0-9_-]+)?|templates(?:\/[A-Za-z0-9_-]+)?|objectives(?:\/[A-Za-z0-9_-]+)?|settings)$/.test(path);
+  if (management) {
+    if (req.apiScope !== 'manage' || !isManager(req.user?.role)) throw new HttpError(403, '운영 관리 키와 현재 관리자 권한이 필요합니다.');
+    if (!['GET', 'POST', 'PUT'].includes(req.method)) throw new HttpError(403, '허용되지 않은 관리 작업입니다.');
+    return;
+  }
   const readable = /^\/api\/(textbooks|curricula|plans)(\/[A-Za-z0-9_-]+)?(\/views)?$/.test(path);
   const writable = readable || /^\/api\/plans\/[A-Za-z0-9_-]+\/(records|ops)$/.test(path);
   const preview = path === '/api/plans/preview' || (path.endsWith('/ops') && (req.body as { dryRun?: unknown })?.dryRun === true);
   if (path !== '/mcp' && (!(req.method === 'GET' ? readable : writable) || !['GET', 'POST', 'PUT'].includes(req.method))) throw new HttpError(403, 'API 키로 접근할 수 없는 경로입니다.');
-  if (path !== '/mcp' && req.method !== 'GET' && req.apiScope !== 'write' && !preview && !path.endsWith('/preview')) throw new HttpError(403, '조회 전용 API 키입니다.');
+  if (path !== '/mcp' && req.method !== 'GET' && !['write', 'manage'].includes(req.apiScope) && !preview && !path.endsWith('/preview')) throw new HttpError(403, '조회 전용 API 키입니다.');
 }
 
 export function registerApiTokenRoutes(app: FastifyInstance, ctx: AppContext) {
@@ -41,7 +48,8 @@ export function registerApiTokenRoutes(app: FastifyInstance, ctx: AppContext) {
     const r = (req.body ?? {}) as Record<string, unknown>;
     const name = text(r.name, 80, '연결 이름').trim();
     if (!name) throw new HttpError(400, '연결 이름이 필요합니다.');
-    if (r.scope !== 'read' && r.scope !== 'write') throw new HttpError(400, '조회 또는 등록·수정 권한을 선택하세요.');
+    if (r.scope !== 'read' && r.scope !== 'write' && r.scope !== 'manage') throw new HttpError(400, '조회 또는 등록·수정 권한을 선택하세요.');
+    if (r.scope === 'manage' && !isManager(user.role)) throw new HttpError(403, '운영 관리 키는 원장·관리자만 발급할 수 있습니다.');
     const days = r.days === undefined ? 90 : r.days;
     if (typeof days !== 'number' || !Number.isInteger(days) || days < 1 || days > 365) throw new HttpError(400, '유효기간은 1~365일입니다.');
     const count = store.db.prepare('SELECT COUNT(*) AS n FROM api_tokens WHERE user_id = ?').get(user.id) as { n: number };

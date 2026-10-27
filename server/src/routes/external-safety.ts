@@ -29,7 +29,7 @@ export function registerExternalSafety(app: FastifyInstance, ctx: AppContext) {
       if (q.cursor !== undefined && !/^[A-Za-z0-9_-]{1,100}$/.test(q.cursor)) throw new HttpError(400, 'cursor 형식이 올바르지 않습니다.');
     }
     const body = (req.body ?? {}) as Record<string, unknown>;
-    if ((req.method === 'PUT' || /\/records$/.test(path)) && (!Number.isInteger(body.version) || (body.version as number) < 1)) throw new HttpError(400, '현재 version을 정수로 입력하세요.');
+    if (((req.method === 'PUT' && !path.startsWith('/api/users/')) || /\/records$/.test(path)) && (!Number.isInteger(body.version) || (body.version as number) < 1)) throw new HttpError(400, '현재 version을 정수로 입력하세요.');
     const op = /^\/api\/plans\/([A-Za-z0-9_-]+)\/ops$/.exec(path);
     const preview = req.method === 'POST' && (path === '/api/plans/preview' || (op && body.dryRun === true));
     if (op && body.dryRun === true) {

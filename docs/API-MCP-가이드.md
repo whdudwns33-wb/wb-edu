@@ -16,13 +16,13 @@
 
 ## 연결 준비
 
-1. 앱 로그인 → 설정 → API·MCP 연결에서 연결 이름·권한·유효기간을 선택한다. 기본은 조회 전용·90일이며 최대 365일, 계정당 20개다.
+1. 앱 로그인 → 설정 → API·MCP 연결에서 연결 이름·권한·유효기간을 선택한다. 기본은 조회 전용·90일이며 최대 365일, 계정당 20개다. 원장·관리자는 manage(전체 업무·운영 관리)를 별도 선택할 수 있다. 기존 read/write 키는 자동 승격하지 않는다.
 2. 키는 한 번만 표시된다. 연결 앱의 비밀 저장소나 환경변수에 보관한다. DB에는 SHA-256 해시만 저장하며 목록에서는 평문을 반환하지 않는다.
 3. 연결이 끝나면 해당 키를 폐기한다. 권한 변경·비활성화·만료·폐기는 다음 요청부터 적용된다. 토큰의 범위와 사용자 역할을 함께 검사한다.
 
 운영 주소는 API `https://planner.wbcowork.com/api`, MCP `https://planner.wbcowork.com/mcp`다. 서버와 기존 Cloudflare 연결은 그대로 사용한다. 개발 리허설은 `http://127.0.0.1:3988`의 메모리 DB만 사용했다.
 
-OpenAPI 3.1 문서는 `/api/openapi.json`에서 제공한다. 자료를 포함하지 않는 `/api/health`는 공개 상태 확인용이다. 그 외 외부 요청은 `Authorization: Bearer <연결 키>`를 사용한다. 키로 계정·비밀번호·다른 키·샘플 삭제·임의 명령에는 접근할 수 없다.
+OpenAPI 3.1 문서는 `/api/openapi.json`에서 제공한다. 자료를 포함하지 않는 `/api/health`는 공개 상태 확인용이다. 그 외 외부 요청은 `Authorization: Bearer <연결 키>`를 사용한다. 기존 read/write 키로는 계정·설정에 접근할 수 없다. manage 키는 기존 업무와 사용자·권한·휴일·설정·출력 양식·학습목표를 관리한다. 다른 키 발급·샘플 일괄 삭제·SQL·임의 명령은 공개하지 않는다.
 
 ```powershell
 # WB_PLANNER_API_TOKEN은 연결 앱의 비밀 설정에서 읽는다. 실제 값을 명령 기록에 적지 않는다.
@@ -56,13 +56,13 @@ Invoke-RestMethod 'https://planner.wbcowork.com/api/textbooks?limit=100' -Header
 }
 ```
 
-도구 17개: 교재·과정·계획별 `list_*`, `get_*`, `create_*`, `update_*` 12개와 `get_progress_views`, `preview_plan`, `record_progress`, `preview_reschedule`, `apply_reschedule`다. 쓰기 도구는 `confirm:true`, 요청 재시도 식별자 `requestId`를 요구한다. 계획 생성·재편성은 서버가 미리보기 확인 ID까지 검사한다. metadata의 확인 설명만으로 권한을 대신하지 않는다. 계정 관리·SQL·파일 실행 도구는 제공하지 않는다.
+기존 업무 도구 17개: 교재·과정·계획별 `list_*`, `get_*`, `create_*`, `update_*` 12개와 `get_progress_views`, `preview_plan`, `record_progress`, `preview_reschedule`, `apply_reschedule`다. 쓰기 도구는 `confirm:true`, 요청 재시도 식별자 `requestId`를 요구한다. 계획 생성·재편성은 서버가 미리보기 확인 ID까지 검사한다. metadata의 확인 설명만으로 권한을 대신하지 않는다. 운영 관리 도구 15개(list/create/update_users, list/create/update_holiday_sets, list/create/update_templates, list/create/update_objectives, get_password_policy, get/update_settings)를 추가해 총 32개다. manage 키와 현재 원장·관리자 권한이 필요하며, 관리자는 원장을 변경하거나 원장으로 승격할 수 없다. SQL·파일 실행은 제공하지 않는다.
 
 `requestId`는 호출할 때마다 무조건 바꾸는 값이 아니다. 통신 실패로 **같은 작업**을 재시도할 때는 같은 값을 유지한다. 새 작업이나 입력 변경 시 새 값을 사용한다.
 
 ## 남은 범위
 
-운영 API·MCP·반년 보기 배포와 외부 실제 MCP 연결 검증은 완료했다. 운영 자료를 바꾸는 쓰기 성공 검사는 메모리 DB에서 수행했고, 운영에서는 조회와 권한 차단만 검사했다. 학생 명부 원천·고유번호 연동과 학생별 활성 계획 선택·확정 원자성은 별도 작업지시서 범위이며 이번 연동 기반 작업을 그 전체 완료로 보고하지 않는다. PC 재부팅은 사용자 요청으로 미실시했다. SYSTEM 자동 시작 작업 적용은 관리자 실행 정책에 차단되어 남아 있다.
+운영 API·MCP·반년 보기 배포와 외부 실제 MCP 연결 검증은 완료했다. 운영 자료를 바꾸는 쓰기 성공 검사는 메모리 DB에서 수행했고, 운영에서는 조회와 권한 차단만 검사했다. 학생 명부 원천·고유번호 연동과 학생별 활성 계획 선택·확정 원자성은 별도 작업지시서 범위이며 이번 연동 기반 작업을 그 전체 완료로 보고하지 않는다. PC 재부팅은 사용자 요청으로 미실시했다. SYSTEM 자동 시작 작업은 23차에 등록했고 실제 프로세스 종료 후 자동 복구를 확인했다. 실제 재부팅 검증은 사용자 요청으로 남겨 뒀다.
 
 
 ## 검토할 변경
@@ -70,5 +70,17 @@ Invoke-RestMethod 'https://planner.wbcowork.com/api/textbooks?limit=100' -Header
 - 서버: `app.ts`, `context.ts`, `db.ts`, `routes/users.ts`, `seed.ts`의 역할·최초 변경 상태와 `routes/api-tokens.ts`, `routes/external-safety.ts`, `routes/mcp.ts`, `openapi.ts`의 외부 연결.
 - 공용 집계·출력: `shared/src/types.ts`, `views.ts`, `output.ts`, `server/src/export.ts`, 계획 views/export 라우트. 기존 JSON 문서·작성자 ID는 변환하지 않는다.
 - 화면: 기존 권한 표시, 사용자·계정 설정, 첫 로그인 변경 전 메뉴 차단, `ApiConnections.tsx`, 반년 탭·인쇄·출력 열 선택.
-- 운영 스크립트: `register-server.ps1`, `register-tasks.ps1`, `server-control.ps1`. 새 SYSTEM 작업 등록은 미적용이다.
+- 운영 스크립트: `register-server.ps1`, `register-tasks.ps1`, `server-control.ps1`. SYSTEM 작업 등록·종료 후 자동 복구 확인을 완료했다.
 - 검증: 역할 회귀, 외부 키·실제 MCP 클라이언트, 반년 경계·엑셀, Windows 작업 등록·제어 모의 검사. 최종 자동 검사 321건과 타입·웹 빌드가 통과했다.
+
+
+## 운영 관리 요청 (2026-10-27 확장)
+
+manage는 발급자의 현재 역할을 넘지 않는다. 강사는 발급할 수 없고 기존 manage 발급자가 강사로 낮아지면 관리 호출과 재시도도 거절한다. 만료·폐기·최초 변경 필수 검사도 유지한다.
+
+- GET/POST `/api/users`, PUT `/api/users/{id}`, GET `/api/users/password-policy`.
+- 사용자 목록·발급·수정 응답에는 비밀값 없는 `revision`을 포함한다. PUT은 목록에서 본 `revision`을 `expectRevision`으로 보내며 상태가 달라지면 409다. 문서의 정수 version과 구분한다.
+- 사용자 생성·비밀번호 초기화는 `useInitialPassword:true`로 요청한다. 초기값은 서버의 지정 비밀 환경변수를 사용하며 첫 로그인 변경을 강제한다. 외부 API에 password 필드를 넣으면 거절한다. 값과 비밀번호 해시는 반환하지 않는다.
+- GET/POST `/api/holiday-sets`, `/api/templates`, `/api/objectives`; PUT은 각 `/{id}`와 현재 version. 설정은 GET/PUT `/api/settings`이며 PUT에 현재 version이 필요하다.
+- 모든 저장의 Idempotency-Key·MCP requestId와 confirm:true 규칙은 같다. 사용자 비활성화·초기화는 해당 계정의 세션과 외부 키를 폐기하므로 적용 전에 대상을 확인한다.
+- 다른 PC 준비와 복사할 Codex 프롬프트는 [김정현 PC 인수인계](김정현-PC-인수인계.md)에 있다. 운영 자격정보·키·DB는 저장소에 포함하지 않는다.

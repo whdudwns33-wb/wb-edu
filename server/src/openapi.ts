@@ -32,3 +32,15 @@ openapi.paths['/api/plans/{id}/records'] = { post: { summary: '진도 기록 추
 openapi.paths['/api/plans/preview'] = { post: { summary: '계획 미리보기 (read 키 가능)', requestBody: body('Input'), responses } };
 openapi.paths['/api/plans/{id}/ops'] = { post: { summary: '일정 변경 미리보기·검토 결과 적용', description: 'dryRun=true로 먼저 요청합니다. 반환된 approvalId·현재 version·동일 op/params를 보내 적용합니다. 입력이나 버전이 바뀌면 재검토가 필요합니다. 적용은 write 키와 Idempotency-Key가 필요합니다.', parameters: [id, { ...key, required: false }], requestBody: body('Operation'), responses } };
 openapi.paths['/api/health'] = { get: { summary: '개인정보 없는 서버 상태', security: [], responses } };
+
+// 운영 관리 키는 기존 업무 키의 권한을 자동으로 확장하지 않는다.
+for (const [resource, label] of [['users', '사용자·권한'], ['holiday-sets', '휴일'], ['templates', '출력 양식'], ['objectives', '학습목표']]) {
+  const user = resource === 'users';
+  openapi.paths['/api/' + resource] = {
+    get: { summary: label + ' 목록 (manage 키)', description: user ? '비밀번호·해시는 반환하지 않습니다. 수정 전에 revision을 확인하세요.' : '원장·관리자 전용 운영 관리 키가 필요합니다.', responses },
+    post: { summary: label + ' 등록 (manage 키)', description: user ? 'username, displayName, role, useInitialPassword:true. 최초 변경 필수. 비밀번호 직접 전송 불가. 원장 부여는 원장만 가능.' : '기존 웹 API와 같은 입력입니다.', parameters: [key], requestBody: body('Input'), responses },
+  };
+  openapi.paths['/api/' + resource + '/{id}'] = { put: { summary: label + ' 수정 (manage 키)', description: user ? '목록의 revision을 expectRevision으로 보냅니다. 이름·역할·활성 상태·useInitialPassword:true 재설정을 지원합니다. 원장 보호·자기 권한 해제 차단·초기 변경 필수 규칙을 유지합니다.' : '현재 version이 필요합니다.', parameters: [id, key], requestBody: body(user ? 'Input' : 'VersionedInput'), responses } };
+}
+openapi.paths['/api/settings'] = { get: { summary: '운영 설정 조회 (manage 키)', responses }, put: { summary: '운영 설정 수정 (manage 키)', parameters: [key], requestBody: body('VersionedInput'), responses } };
+openapi.paths['/api/users/password-policy'] = { get: { summary: '지정 초기 비밀번호 설정 여부만 조회 (manage 키)', responses } };
